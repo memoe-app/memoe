@@ -2732,6 +2732,9 @@ def at_mac(now=None):
     return 0 <= now_s - float(at) <= PRESENCE_FRESH_SECONDS
 
 
+_LAST_INBOX_MS = 0
+
+
 def write_inbox(text, source="", job="", chat_id=SCREEN, said="",
                 job_id="", loops=(), kind="", offer="", instruction="",
                 session_id="", title="", summary="", subject="", options=()):
@@ -2758,7 +2761,14 @@ def write_inbox(text, source="", job="", chat_id=SCREEN, said="",
     except OSError:
         pass
     now = time.time()
-    name = "%d-%s.json" % (int(now * 1000), uuid.uuid4().hex[:8])
+    # The app reads the inbox in name order, so two messages written in one
+    # millisecond used to come out in the order of their random suffixes —
+    # half the time backwards (test_drain_says caught it under load). The
+    # millisecond is kept strictly increasing within this process.
+    global _LAST_INBOX_MS
+    ms = max(int(now * 1000), _LAST_INBOX_MS + 1)
+    _LAST_INBOX_MS = ms
+    name = "%d-%s.json" % (ms, uuid.uuid4().hex[:8])
     path = os.path.join(d, name)
     tmp = path + ".tmp"
     body = {"text": text, "at": now, "source": source or "cron",

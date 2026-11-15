@@ -39,6 +39,33 @@ enum Payload {
         return FileManager.default.fileExists(atPath: dir.path) ? dir : nil
     }
 
+    /// A file in the checkout this binary was built from — **debug builds
+    /// only**, and nil in a release.
+    ///
+    /// Sixteen helper lookups used to end with `~/moe/moe-home/…` as a last
+    /// resort, in every build. On a stranger's Mac that path does not exist
+    /// and the rung was dead weight. On the owner's it does exist, and on
+    /// 2026-11-12 it was a checkout 1,409 commits behind `main`: a release
+    /// Moe whose installed script and bundled copy were both missing would
+    /// have run a nine-week-old one from there and reported nothing. A
+    /// missing script now fails where it is missing, in words.
+    ///
+    /// What is left is the developer convenience it was meant to be: a
+    /// `swift build` binary has no bundle payload, so it may read the tree it
+    /// was compiled from — that tree, by `#filePath`, never whichever
+    /// checkout happens to be sitting at `~/moe`.
+    static func checkoutPath(_ relative: String, file: String = #filePath) -> String? {
+        #if DEBUG
+        // …/Sources/Moe/Payload.swift → the repo root.
+        let root = URL(fileURLWithPath: file)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let path = root.appendingPathComponent(relative).path
+        return FileManager.default.fileExists(atPath: path) ? path : nil
+        #else
+        return nil
+        #endif
+    }
+
     /// The version this build would install: the app's version, plus a digest
     /// of the payload's shape — every file's path, size and modification date.
     ///
@@ -188,8 +215,12 @@ enum Payload {
         // life of the Mac, and the marker below would stop anything from ever
         // fixing them. So they are not written at all; the next launch from
         // /Applications writes them properly.
-        if exe.hasPrefix("/Volumes/") || exe.contains("/AppTranslocation/") {
-            return "background jobs: not yet — Moe is running from \(exe.hasPrefix("/Volumes/") ? "the disk image" : "a temporary copy")"
+        // (A release copy never gets this far from either — it is offered
+        // the move to Applications at launch, `MoveToApplications`; this
+        // still holds for any other build.)
+        let origin = MoveToApplications.origin(ofPath: exe)
+        if origin != .elsewhere {
+            return "background jobs: not yet — Moe is running from \(origin == .diskImage ? "the disk image" : "a temporary copy")"
         }
 
         // A third path that must never be written, and it is worse than the

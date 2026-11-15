@@ -76,6 +76,20 @@ enum AttachmentIntake {
             || pasteboard.availableType(from: [.png, .tiff]) != nil
     }
 
+    /// Whether ⌘V in the box should attach rather than paste words: a file
+    /// copied in Finder (whose name also rides along as text), or a picture
+    /// with no text beside it — a screenshot, "Copy Image". Copied text that
+    /// happens to carry a picture as well still pastes as text.
+    static func pasteAttaches(_ pasteboard: NSPasteboard) -> Bool {
+        if pasteboard.canReadObject(forClasses: [NSURL.self],
+                                    options: [.urlReadingFileURLsOnly: true]) {
+            return true
+        }
+        guard pasteboard.availableType(from: [.png, .tiff]) != nil else { return false }
+        return pasteboard.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+    }
+
     static func take(from pasteboard: NSPasteboard) -> [ChatAttachment] {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
                                              options: [.urlReadingFileURLsOnly: true]) as? [URL],
@@ -143,12 +157,28 @@ enum AttachmentIntake {
         // Moe is usually not the active app — the + is often pressed on the
         // island — and an open panel that appears behind the frontmost window
         // looks like a button that did nothing.
+        //
+        // Activating is not enough on its own. The popped-out chat floats
+        // (`FloatingChatWindow.applyLevel`, `.floating`) on every desktop and
+        // over full-screen apps, and an ordinary open panel opened from it
+        // came up underneath it, or on another desktop than the full-screen
+        // app in front — the owner pressed + there and nothing happened
+        // (2026-11-14). So the panel sits above the chat and below the
+        // island, and comes to the desktop the person is on.
+        Self.raise(panel)
         NSApp.activate()
         let response = await withCheckedContinuation { done in
             panel.begin { done.resume(returning: $0) }
         }
         guard response == .OK else { return [] }
         return panel.urls.compactMap(attachment(for:))
+    }
+
+    /// Above the floating chat (`.floating`), below the island
+    /// (status-window level), on the desktop in front — full-screen ones too.
+    static func raise(_ panel: NSWindow) {
+        panel.level = .modalPanel
+        panel.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
     }
 
     /// `screencapture -i`: the same crosshair as ⇧⌘4, and Escape cancels.
@@ -284,6 +314,7 @@ private final class PhotoPickSession: NSObject, PHPickerViewControllerDelegate, 
         window.center()
         session.window = window
         live = session
+        AttachmentIntake.raise(window)      // above the floating chat, as the file panel
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }

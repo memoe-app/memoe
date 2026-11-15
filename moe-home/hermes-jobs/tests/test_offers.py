@@ -92,7 +92,7 @@ class OfferPassTest(unittest.TestCase):
         sid, _ = self.s.upsert("native/whatsapp", "15551230001@s.whatsapp.net", "Mordecai", found, NOW)
         rec = self.s.load_situations()[sid]
         self.s.set_prepared(sid, {"offer": "A reply is ready.", "draft": "Hi", "for": rec["material"],
-                                  "at": "2026-09-24T19:00:00Z"})
+                                  "at": "2026-09-24T19:00:00Z"}, NOW)
         self.run_pass(NOW)
         self.assertEqual(self.offered, [sid])
         # The other side raises the stakes: a different situation to prepare for.
@@ -102,7 +102,7 @@ class OfferPassTest(unittest.TestCase):
         self.assertEqual(rec["status"], "sensed")
         self.assertTrue(P.should_prepare(rec), "prepared again for the new version")
         self.s.set_prepared(sid, {"offer": "A new reply is ready.", "draft": "Hi again", "for": rec["material"],
-                                  "at": "2026-09-24T20:00:00Z"})
+                                  "at": "2026-09-24T20:00:00Z"}, NOW + 600)
         self.run_pass(NOW + 3600)
         self.assertEqual(self.offered, [sid], "one offer per conversation per day (owner, 2026-09-30)")
         self.run_pass(NOW + 86400)

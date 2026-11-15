@@ -68,6 +68,7 @@ both see the newest claims.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -80,6 +81,7 @@ from .store import ClaimStore, MEMORY_KEY_ID, claim_id, normalise
 from .projection import TARGETS, project_all, memory_path, report_summary, retract_addressed
 from . import overflow as _overflow
 from . import learn_turn as _learn_turn
+from . import channel_spool as _channel_spool
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +192,98 @@ def resolve_targets(config: Optional[Dict[str, Any]] = None) -> List[str]:
     return targets or list(TARGETS)
 
 
-def _tokens(text: str) -> set:
-    return {w.lower() for w in _WORD_RE.findall(text or "") if len(w) > 2}
+#: Words that say nothing about which fact is wanted. Recall used to count
+#: them: the top three claims by raw word overlap, so "what do you know about
+#: the accountant" was answered with three claims that happened to contain
+#: "what", "you" and "the", and the one about the accountant lost on count.
+#:
+#: Deliberately short and English-only. It is a floor, not the mechanism —
+#: the mechanism is the rarity weighting in ``rank_claims``, which is computed
+#: from the store and so finds the common words of whatever language and
+#: whatever names the store is actually written in. This list is what makes a
+#: store of twenty claims behave before it is big enough to say what is common.
+STOP_WORDS = frozenset("""
+a about after again all also am an and any are as at be because been before
+being both but by can could did do does doing done for from get got had has
+have having he her here hers him his how i if in into is it its just know let
+like me more most my no not now of off on one only or other our ours out over
+own she so some such tell than that the their theirs them then there these
+they this those to too under up us very was we were what when where which
+while who whom whose why will with would you your yours
+""".split())
+
+#: A word in more than this share of the live claims is common *in this
+#: store* — the person's own name, usually — and cannot tell one claim from
+#: another. Only once the store is big enough for a share to mean something.
+COMMON_SHARE = 0.5
+COMMON_MIN_CLAIMS = 8
+
+
+def _stem(word: str) -> str:
+    """"meetings" and "meeting", "Dana's" and "Dana": one word. Nothing
+    cleverer — a real stemmer is a dependency, and the cost of this one being
+    crude is a missed match, never a wrong claim rewritten: only the tokens
+    are folded, the stored text is returned verbatim."""
+    if word.endswith("'s") or word.endswith("’s"):
+        word = word[:-2]
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+    return word
+
+
+def _tokens(text: str) -> frozenset:
+    """The words of ``text`` that could identify a fact: lowercased, folded,
+    with the stop words and the one- and two-letter words gone."""
+    out = set()
+    for raw in _WORD_RE.findall(text or ""):
+        low = raw.lower().strip("'")
+        if len(low) <= 2 or low in STOP_WORDS:
+            continue
+        word = _stem(low)
+        if len(word) > 2 and word not in STOP_WORDS:
+            out.add(word)
+    return frozenset(out)
+
+
+def rank_claims(wanted, corpus, candidates, limit, tokens_of=_tokens):
+    """The ``limit`` best of ``candidates`` for the words ``wanted``.
+
+    ``corpus`` is every live claim's text — the store itself, which is where
+    "rare" is measured: a word's weight is ``ln(1 + N / df)``, so a word in
+    one claim of six hundred outweighs a dozen words that are in half of
+    them, and a word in more than ``COMMON_SHARE`` of the store weighs
+    nothing at all. ``candidates`` is ``[(target, text)]``, the claims that
+    may be surfaced (those not already in the prompt).
+
+    A claim's score is the weight of the query's words it holds. Ties keep
+    the order they came in, oldest first, as before. Returns
+    ``[(score, target, text)]`` — the text exactly as stored.
+    """
+    wanted = frozenset(wanted)
+    if not wanted or limit <= 0:
+        return []
+    df: Dict[str, int] = {}
+    n = 0
+    for text in corpus:
+        n += 1
+        for word in tokens_of(text) & wanted:
+            df[word] = df.get(word, 0) + 1
+    if not df:
+        return []
+    weight: Dict[str, float] = {}
+    for word, count in df.items():
+        if n >= COMMON_MIN_CLAIMS and count > n * COMMON_SHARE:
+            continue
+        weight[word] = math.log(1.0 + n / count)
+    if not weight:
+        return []
+    scored = []
+    for target, text in candidates:
+        score = sum(weight.get(word, 0.0) for word in tokens_of(text) & wanted)
+        if score > 0:
+            scored.append((score, target, text))
+    scored.sort(key=lambda item: -item[0])
+    return scored[:limit]
 
 
 class ClaimStoreProvider(MemoryProvider):
@@ -246,6 +338,9 @@ class ClaimStoreProvider(MemoryProvider):
         section = _config()
         self._session_id = session_id or ""
         self._platform = str(kwargs.get("platform") or "")
+        self._chat_id = str(kwargs.get("chat_id") or "")
+        self._chat_type = str(kwargs.get("chat_type") or "")
+        self._agent_context = str(kwargs.get("agent_context") or "")
         self._targets = resolve_targets(section)
         self._recall_limit = self._resolve_recall_limit(section)
         if self._ledger_dir is None:
@@ -458,8 +553,8 @@ class ClaimStoreProvider(MemoryProvider):
         """The writer rule: a source whose hash differs from what this side
         last applied or wrote becomes a new sealed ``document`` record.
 
-        One name set is skipped at session START: the §14.4a capability
-        tables. Reading them means asking every connector its own `status`,
+        Two name sets are skipped at session START: the skills (D5), and
+        the §14.4a capability tables. Reading them means asking every connector its own `status`,
         which is 2.25 s on a real Mac with twelve of them — nothing on a
         background pass, and far too much on the notch's first turn, which
         is the one path here that has to feel instant. They are written at
@@ -474,7 +569,10 @@ class ClaimStoreProvider(MemoryProvider):
         names = None
         if reason == "session-start":
             capability_names = set(lib.documents.capability.CAPABILITY_NAMES)
-            names = [n for n in sources.names() if n not in capability_names]
+            # Skills too (D5): every one is read and hashed, and a first pass
+            # seals about 3 MB — session end and shutdown carry them.
+            names = [n for n in sources.names() if n not in capability_names
+                     and not n.startswith("skill/")]
             if lib.documents.capability.publishes_here():
                 # A reminder that fired or was deleted is no longer listed, and
                 # only a visit seals its removal. Left to session end and
@@ -617,31 +715,67 @@ class ClaimStoreProvider(MemoryProvider):
                 # The app pulled something since we last looked: apply any
                 # document that arrived before the next turn is built.
                 self._apply_documents("prefetch")
-            wanted = _tokens(query)
+            wanted = _tokens(self._persons_words(query))
             if not wanted:
                 return ""
-            scored = []
+            corpus: List[str] = []
+            candidates = []
             for target in self._targets:
                 try:
                     projected = set(self._projected_entries(target))
                 except Exception:
                     projected = set()
                 for text in self._store.live(target):
+                    corpus.append(text)
                     if text in projected:
                         continue  # already in the prompt via the digest
-                    overlap = len(wanted & _tokens(text))
-                    if overlap:
-                        scored.append((overlap, target, text))
-            if not scored:
+                    candidates.append((target, text))
+            picked = rank_claims(wanted, corpus, candidates, self._recall_limit,
+                                 tokens_of=self._claim_tokens)
+            if not picked:
                 return ""
-            scored.sort(key=lambda item: -item[0])
-            picked = scored[: self._recall_limit]
             self._last_recall_count = len(picked)
             lines = [f"- ({target}) {text}" for _, target, text in picked]
             return "RECALLED CLAIMS (not in the memory digest):\n" + "\n".join(lines)
         except Exception:
             logger.debug("claimstore: prefetch failed", exc_info=True)
             return ""
+
+    @staticmethod
+    def _persons_words(query: str) -> str:
+        """What the person said, out of the turn as Moe sent it.
+
+        The turn Hermes hands over is the person's words wrapped in Moe's:
+        the Now line, the brief, and several hundred to several thousand
+        characters of "# Before you answer". Recall matched all of it, so
+        every question was also a search for "spoken", "sentence", "answer"
+        and "sources" — and any three claims holding those outranked the one
+        that was asked about. moe-screen's sweep already knows how to cut a
+        turn down to the person (it is how the learner finds their words);
+        without it beside this plugin, the turn is used as it came."""
+        try:
+            mod = _sweep_module()
+            reader = getattr(mod, "persons_words", None) if mod is not None else None
+            if reader is None:
+                return query
+            # Nothing left is a turn the person did not write — a background
+            # note, a scheduled job's prompt. Its own words are the query.
+            return reader(query) or query
+        except Exception:
+            logger.debug("claimstore: could not cut the turn to the person's words", exc_info=True)
+            return query
+
+    def _claim_tokens(self, text: str) -> frozenset:
+        """``_tokens`` of a claim, remembered. Claim texts are immutable and
+        every prefetch reads all of them, so each is split once per process
+        rather than once per question."""
+        cache = self.__dict__.setdefault("_token_cache", {})
+        found = cache.get(text)
+        if found is None:
+            if len(cache) > 20000:      # a bound, not a policy: start over
+                cache.clear()
+            found = cache[text] = _tokens(text)
+        return found
 
     @staticmethod
     def _projected_entries(target: str) -> List[str]:
@@ -696,6 +830,9 @@ class ClaimStoreProvider(MemoryProvider):
             return
         if target not in self._targets:
             return
+        if _learn_turn.no_memory():  # "Don't remember this chat": no claim from this turn
+            logger.info("claimstore: memory write not kept — %s", _learn_turn.NOT_REMEMBERED)
+            return
         metadata = metadata or {}
         source = "hermes:" + str(metadata.get("write_origin") or "assistant_tool")
         old_text = str(metadata.get("old_text") or "")
@@ -722,7 +859,13 @@ class ClaimStoreProvider(MemoryProvider):
         where this provider may write, only on a turn the person started
         (``learn_turn.refusal``: not a helper's result or any other turn the
         app sends on its own, not a cron run, not a bot), and never with
-        Background thinking off."""
+        Background thinking off.
+
+        First, and whatever the learning gates say: a chat turn the Mac
+        answered is queued for the ledger (``channel_spool``), so Away has the
+        conversation too. History is not learning — Background thinking off
+        does not take the words out of the person's own history."""
+        self._spool_turn(user_content, assistant_content)
         if self._store is None or not self._writes_enabled:
             return
         why_not = _learn_turn.refusal(platform=getattr(self, "_platform", ""),
@@ -733,6 +876,23 @@ class ClaimStoreProvider(MemoryProvider):
         _learn_turn.learn_from_turn(self._store, user_content, assistant_content,
                                     targets=self._targets, call=self._turn_call(),
                                     sweep=_sweep_module())
+
+    def _spool_turn(self, user_content: str, assistant_content: str) -> None:
+        try:
+            why_not = _channel_spool.wanted(getattr(self, "_platform", ""),
+                                            getattr(self, "_chat_type", ""),
+                                            getattr(self, "_agent_context", ""))
+            if why_not:
+                return
+            if _learn_turn.no_memory():
+                logger.info("claimstore: chat turn not queued — %s", _learn_turn.NOT_REMEMBERED)
+                return
+            if _channel_spool.append(_default_moe_home(), platform=self._platform,
+                                     chat_id=getattr(self, "_chat_id", ""),
+                                     user=user_content or "", assistant=assistant_content or ""):
+                logger.info("claimstore: %s turn queued for the ledger", self._platform)
+        except Exception as e:  # noqa: BLE001 — never out of sync_turn
+            logger.warning("claimstore: chat turn not queued: %s: %s", type(e).__name__, e)
 
     @staticmethod
     def _turn_call():
@@ -825,7 +985,11 @@ class ClaimStoreProvider(MemoryProvider):
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Write non-secret config to ``config.yaml`` under ``memory.claimstore``."""
         try:
-            import yaml
+            try:
+                import yaml
+            except ImportError:
+                # Hermes's own venv has no PyYAML; hermes_yaml is its (ruamel) reader.
+                import hermes_yaml as yaml
             from hermes_cli.config import read_user_config_raw
 
             config_path = Path(hermes_home) / "config.yaml"
@@ -843,7 +1007,7 @@ class ClaimStoreProvider(MemoryProvider):
                 ]
             memory_section[PROVIDER_NAME] = merged
             with open(config_path, "w", encoding="utf-8") as handle:
-                yaml.dump(existing, handle, default_flow_style=False)
+                yaml.safe_dump(existing, handle, default_flow_style=False)
         except Exception:
             logger.debug("claimstore: save_config failed", exc_info=True)
 
@@ -861,6 +1025,25 @@ __all__ = ["ClaimStoreProvider", "ClaimStore", "claim_id", "normalise", "registe
 
 
 # -- job-time travel (status #7, 2026-09-29) --------------------------------
+
+
+def _mirror_peer_turns(lib: Any, store: Any, keyring: Any, home: Path) -> int:
+    """D3: Away's turns into this Mac's own search index, a bounded batch
+    per engine tick (moeledger/mirror.py). Never raises."""
+    import importlib
+    import os
+    if os.environ.get("MOE_MIRROR_CHATS", "1") == "0":
+        return 0
+    try:
+        mirror = importlib.import_module(lib.__name__ + ".mirror")
+        me = getattr(store, "device", None)
+        if not me:
+            return 0
+        done = mirror.mirror(store.records(), keyring.key, me, home)
+        return done.get("mirrored", 0)
+    except Exception:  # noqa: BLE001 — a job's extra, never its failure
+        logger.warning("claimstore: mirroring Away's chats into search failed", exc_info=True)
+        return 0
 
 
 def travel(names: List[str], *, receive: bool = True, send: bool = True,
@@ -890,17 +1073,22 @@ def travel(names: List[str], *, receive: bool = True, send: bool = True,
         if receive:
             store.refresh()
             bodies = [b for b in docs.document_bodies(store.records())
-                      if isinstance(b, dict) and b.get("name") in wanted]
+                      if isinstance(b, dict) and (b.get("name") in wanted
+                                                  or docs.travels_at_job_time(b.get("name")))]
             out["applied"] = docs.apply_documents(bodies, sources, state, store.opening_keys)
+            out["mirrored"] = _mirror_peer_turns(lib, store, keyring, home)
         # A Mac with no Away has nobody to send to: nothing is sealed, or its
         # own ledger would gain a copy of every change for nothing (review
         # 2026-09-29 #4).
         enrolled = (_default_moe_home() / "cloud" / "credential.json").exists()
         if send and enrolled:
+            # The Mac's jobs and their last results (D2) ride the engine's
+            # tick too, so a job made or run here reaches Away in minutes.
+            extra = [n for n in sources.names() if docs.travels_at_job_time(n, send=True)]
             out["written"] = docs.write_documents(
                 sources, state, store.key,
                 lambda body: store.append(lib.records.KIND_DOCUMENT, body, after=store.frontier()),
-                names=list(names))
+                names=list(names) + [n for n in extra if n not in names])
             if out["written"]:
                 import importlib
                 nudge = importlib.import_module(lib.__name__ + ".nudge")

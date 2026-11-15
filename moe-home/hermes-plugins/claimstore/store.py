@@ -535,11 +535,29 @@ def resolve(records: Sequence[Dict[str, Any]], target: str,
         else:
             retracts.setdefault(cid, []).append(record)
 
+    # :func:`causally_after`, once per tombstone, over parents read once. A
+    # ledger of ~9,000 records with ~70 retractions a target made 2.7 million
+    # ``parents_of`` calls a resolve that way — a quarter of a second each,
+    # and a session start resolves fourteen times (measured 2026-11-08).
+    parent_lists = [parents_of(record) for record in records]
+    first: Dict[str, int] = {}
+    for index, record in enumerate(records):
+        first.setdefault(record["id"], index)
     after_retraction: Dict[str, Set[str]] = {}
     for tombstones in retracts.values():
         for tombstone in tombstones:
-            if tombstone["id"] not in after_retraction:
-                after_retraction[tombstone["id"]] = causally_after(tombstone, records)
+            tid = tombstone["id"]
+            if tid in after_retraction:
+                continue
+            start = first.get(tid)
+            after: Set[str] = set()
+            if start is not None:
+                for index in range(start + 1, len(records)):
+                    for parent in parent_lists[index]:
+                        if parent == tid or parent in after:
+                            after.add(records[index]["id"])
+                            break
+            after_retraction[tid] = after
 
     standing: List[Live] = []
     pending: List[PendingRevival] = []
@@ -766,6 +784,10 @@ class ClaimStore(object):
         #: used to cost one of these *per absorbed entry*, which on a real
         #: ledger is seconds, synchronously, inside ``initialize()``.
         self.full_reads = 0
+        #: Bumped whenever ``_ordered`` changes (a re-read or an append);
+        #: what :meth:`resolve`'s memo is keyed on.
+        self._generation = 0
+        self._resolved: Dict[str, Tuple[Any, Projection]] = {}
 
     # -- identity -----------------------------------------------------------
 
@@ -991,6 +1013,7 @@ class ClaimStore(object):
         self._ordered = ordered(records)
         self._ids = seen
         self._loaded = True
+        self._generation += 1
         self.full_reads += 1
         return True
 
@@ -1003,14 +1026,31 @@ class ClaimStore(object):
 
     def claim_records(self, target: Optional[str] = None) -> List[Dict[str, Any]]:
         out = []
+        # Once, not per record: each read opens the keyring file, and on a
+        # 9,000-record ledger that was 0.4 s of a session start.
+        keys = self.opening_keys
         for record in self.records():
-            claim = parse_claim(record, self.opening_keys)
+            claim = parse_claim(record, keys)
             if claim and (target is None or claim["target"] == target):
                 out.append(record)
         return out
 
     def resolve(self, target: str) -> Projection:
-        return resolve(self.records(), target, self.opening_keys)
+        """:func:`resolve` over this store, remembered until the ledger or the
+        keys change. A session start asks fourteen times and every prefetch
+        twice, nearly always of a ledger nothing has touched in between. The
+        Projection is shared: read it, never mutate it."""
+        keys = self.opening_keys
+        with self._cache_lock:
+            if not self._loaded:
+                self._refresh()
+            memo = (self._generation, tuple(keys) if isinstance(keys, (list, tuple)) else keys)
+            held = self._resolved.get(target)
+            if held is not None and held[0] == memo:
+                return held[1]
+            projection = resolve(list(self._ordered or []), target, keys)
+            self._resolved[target] = (memo, projection)
+            return projection
 
     def live(self, target: str) -> List[str]:
         """Text of every claim still asserted for ``target``, oldest first."""
@@ -1168,6 +1208,7 @@ class ClaimStore(object):
         # placed. (A parent we do not hold is ignored by ``ordered`` too.)
         self._ordered.append(decoded)
         self._ids.add(decoded["id"])
+        self._generation += 1
         name = self.path.name
         entry = self._files.get(name)
         if entry is None:

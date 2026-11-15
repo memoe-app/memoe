@@ -12,8 +12,14 @@ Called by stage-hermes-seed.sh after pm.prepare_tools. Two things leave:
    which the fork's browser tools read as "still downloading" until then.
 2. Build-time-only files no seeded Hermes reads at run time: C headers
    (node's include/ is 64 MB of OpenSSL headers for every platform), man pages
-   and doc directories, static archives, Python's Tk/IDLE/turtle/ensurepip.
+   and doc directories, static archives, Python's Tk/IDLE/turtle.
    Lazy installs are off, so nothing compiles against them on a user's Mac.
+
+ensurepip STAYS. Without it `python -m venv` fails on every Mac, and Memoe's
+Telegram sign-in (connect-telegram.sh) made its venv that way: from 0.3.22 to
+2026-11-13 every seeded Mac showed "…'-m', 'ensurepip', '--upgrade',
+'--default-pip']' returned non-zero exit status 1". It is ~2 MB; anything a
+person or a skill runs `-m venv` with needs it.
 
 pm records a digest of every entry it publishes and re-hashes it on an
 explicit install. A slimmed entry would read as damaged and be "repaired" back
@@ -35,9 +41,12 @@ DROP_IN_ENTRY = (
     "CHANGELOG.md",
     "lib/tcl*", "lib/tk*", "lib/itcl*", "lib/thread*", "lib/libtcl*",
     "lib/python3.*/tkinter", "lib/python3.*/idlelib", "lib/python3.*/turtledemo",
-    "lib/python3.*/ensurepip", "lib/python3.*/lib-dynload/_tkinter*",
+    "lib/python3.*/lib-dynload/_tkinter*",
 )
 DROP_ANYWHERE = ("*.a",)             # static archives: link-time only
+# Never dropped, whatever a pattern above grows into: `python -m venv` dies
+# without it (see the docstring). main() refuses a hit under one of these.
+KEEP = ("lib/python3.*/ensurepip",)
 
 
 def _size(p: Path) -> int:
@@ -87,6 +96,11 @@ def main(argv: list[str]) -> int:
         if not entry.is_dir():
             continue
         hits = _matches(entry)
+        kept = [h for h in hits for k in KEEP for g in entry.glob(k) if h == g or g in h.parents or h in g.parents]
+        if kept:
+            print(f"  ✗ refusing to drop {', '.join(str(h.relative_to(entry)) for h in kept)}: "
+                  f"`python -m venv` needs it")
+            return 1
         if not hits:
             continue
         size = sum(_size(h) for h in hits)

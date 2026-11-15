@@ -164,7 +164,7 @@ struct ReplyRoutingWiringTests {
     @Test func foldingByHandEndsTheSelfOpenedState() throws {
         let island = try #require(Self.read("Sources/Moe/NotchIsland.swift"),
                                   "Sources/Moe/NotchIsland.swift moved.")
-        #expect(island.contains("onClose: { [weak self] in self?.foldByHand() })"),
+        #expect(island.contains("onClose: { [weak self] in self?.foldByHand() }"),
                 "onClose no longer goes through foldByHand, so it collapses the panel without cancelling the reading clock or clearing selfOpened.")
         let fold = try #require(island.range(of: "private func foldByHand() {"))
         let end = try #require(island.range(of: "\n    }", range: fold.upperBound..<island.endIndex))

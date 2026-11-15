@@ -404,3 +404,105 @@ def test_first_run_alongside_an_existing_conversation_ledger(
     assert (ledger_dir / "mac-9f3c1a2b.jsonl").read_text(encoding="utf-8").count("\n") == 2
     assert p.store.device.startswith("mac-") and p.store.device != "mac-9f3c1a2b"
     assert (ledger_dir / "device.json").exists()
+
+
+# ── recall: stop words, rarity, and the person's own words ──────────────────
+#
+# Recall was the top three claims by raw word overlap. "What do you know about
+# the accountant" matched every claim holding "what", "you" or "the", and the
+# one about the accountant lost on count. And the query was the turn as Moe
+# sent it — the person's words plus the whole "# Before you answer" reminder —
+# so every question was also a search for "spoken" and "sentence".
+
+def _undigested(provider, hermes_home, *texts, target="memory"):
+    """Claims that are live but did not fit the digest — what recall is for."""
+    for text in texts:
+        provider.store.assert_claim(target, text, source="test")
+    provider.on_session_switch("s2")
+    for name in ("MEMORY.md", "USER.md"):
+        (hermes_home / "memories" / name).write_text("", encoding="utf-8")
+
+
+FILLER = [f"{who} asked about what you sent the {what} (note {i})"
+          for i, (who, what) in enumerate(
+              (w, x) for w in ("Dana", "Marcus", "the client", "the landlord")
+              for x in ("team", "office", "board", "bank", "school"))]
+
+
+def test_recall_is_not_won_by_the_words_every_claim_has(provider, hermes_home):
+    _undigested(provider, hermes_home, *FILLER,
+                "Priya is the accountant and prefers email over calls")
+    out = provider.prefetch("what do you know about the accountant")
+    lines = out.splitlines()[1:]
+    assert lines == ["- (memory) Priya is the accountant and prefers email over calls"], out
+    assert provider.recall_status().count == 1
+
+
+def test_a_question_made_only_of_stop_words_recalls_nothing(provider, hermes_home):
+    _undigested(provider, hermes_home, *FILLER)
+    assert provider.prefetch("what about the other one, and then what did you do") == ""
+    assert provider.recall_status() is None
+
+
+def test_the_rare_word_outranks_the_common_one(provider, hermes_home):
+    """Weight is measured in the store: "penicillin" is in one claim, "Dana"
+    in five. By raw overlap they tie at one word each, the tie goes to the
+    oldest, and the five "Dana" claims fill all three places — the claim
+    about penicillin is never recalled at all. Weighted, it comes first."""
+    _undigested(provider, hermes_home, *FILLER, "allergic to penicillin since childhood")
+    out = provider.prefetch("does Dana know about penicillin")
+    assert out.splitlines()[1] == "- (memory) allergic to penicillin since childhood", out
+
+
+def test_a_word_in_most_of_the_store_weighs_nothing(provider, hermes_home):
+    """The person's own name is in half their memory. It cannot pick a claim."""
+    _undigested(provider, hermes_home, *[f"Dana {i} likes item {i}" for i in range(12)],
+                "the cabin wifi password is on the fridge")
+    assert provider.prefetch("Dana") == "" or provider.prefetch("tell me about Dana") == ""
+    assert "fridge" in provider.prefetch("Dana wants the wifi password")
+    assert len(provider.prefetch("Dana wants the wifi password").splitlines()) == 2
+
+
+def test_plurals_and_possessives_meet(provider, hermes_home):
+    _undigested(provider, hermes_home, "Dana's dentist is Dr. Okafor", "the weekly meetings moved to Tuesday")
+    assert "Okafor" in provider.prefetch("who is the dentist for Dana")
+    assert "Tuesday" in provider.prefetch("when is the weekly meeting")
+
+
+def test_recall_reads_the_persons_words_not_moes_wrapping(provider, hermes_home):
+    """The turn as Moe sends it. Nothing in the reminder may recall a claim."""
+    reminder = ("\n\n# Before you answer\n\nNow: Thursday 12 November 2026, 9:04 AM.\n\n"
+                "You are spoken aloud; say a plain sentence before you go quiet, and "
+                "pages are markdown links with a Sources: line after a web lookup.")
+    _undigested(provider, hermes_home,
+                "prefers a plain spoken sentence to markdown links and sources",
+                "the staging cluster is hosted in Frankfurt")
+    out = provider.prefetch("where is the staging cluster hosted" + reminder)
+    assert out.splitlines()[1:] == ["- (memory) the staging cluster is hosted in Frankfurt"], out
+
+
+def test_what_is_recalled_is_the_stored_text_verbatim(provider, hermes_home):
+    """Tokens are folded to match; the claim is never rewritten."""
+    text = "Dana's  Meetings — the WEEKLY ones — are on Tuesdays"
+    _undigested(provider, hermes_home, text)
+    stored = provider.store.live("memory")[-1]
+    out = provider.prefetch("when are the weekly meetings")
+    assert out.splitlines()[1] == f"- (memory) {stored}"
+
+
+def test_recall_keeps_the_limit_and_the_oldest_first_tie_break(provider, hermes_home):
+    _undigested(provider, hermes_home, *[f"the Lisbon trip needs item {i}" for i in range(5)],
+                *[f"unrelated fact number {i} here" for i in range(20)])
+    lines = provider.prefetch("what does the Lisbon trip need").splitlines()[1:]
+    assert lines == [f"- (memory) the Lisbon trip needs item {i}" for i in range(3)]
+
+
+def test_rank_claims_is_pure_and_dependency_free():
+    import claimstore
+    corpus = ["alpha beta", "alpha gamma", "alpha delta", "epsilon zeta"]
+    got = claimstore.rank_claims(claimstore._tokens("alpha zeta"), corpus,
+                                 [("memory", t) for t in corpus], 2)
+    assert [t for _, _, t in got] == ["epsilon zeta", "alpha beta"]
+    assert claimstore.rank_claims(set(), corpus, [("memory", "alpha beta")], 3) == []
+    assert claimstore.rank_claims({"alpha"}, corpus, [], 3) == []
+    assert claimstore._tokens("What do YOU know about the") == frozenset()

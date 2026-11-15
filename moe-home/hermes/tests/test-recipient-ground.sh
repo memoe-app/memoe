@@ -17,6 +17,7 @@
 # judgement is tests/test_recipients.py, run at the end.
 set -u
 
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$HERE/../hooks/confirm-send.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/recipient-ground-test.XXXXXX")"

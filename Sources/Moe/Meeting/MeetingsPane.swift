@@ -20,10 +20,20 @@ struct MeetingsPane: View {
     /// Held in state so pressing the button can refresh it.
     @State private var calendarOffer: String?
     @State private var calendarRefused = false
+    /// A snapshot's pose: one meeting open, with "Write the notes" as it
+    /// stands in that state. Nothing is read from disk for it.
+    struct Posed {
+        var record: MeetingRecord
+        var notes: MeetingNotesWriter.State
+    }
+    var posed: Posed?
 
     var body: some View {
         Group {
-            if let folder = openFolder, let record = past.first(where: { $0.folder == folder }) {
+            if let posed {
+                MeetingDetail(conductor: conductor, record: posed.record, onBack: {}, onChanged: {},
+                              posedNotes: posed.notes)
+            } else if let folder = openFolder, let record = past.first(where: { $0.folder == folder }) {
                 MeetingDetail(conductor: conductor, record: record,
                               onBack: { openFolder = nil },
                               onChanged: { reload() })
@@ -91,6 +101,7 @@ struct MeetingsPane: View {
                     .fill(conductor.meeting.isRecording && !conductor.meetingPaused
                           ? Theme.bad : Theme.ink3.opacity(0.5))
                     .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
                 Text(nowText)
                     .font(Theme.Typo.ui(13, weight: .semibold))
                     .foregroundStyle(Theme.ink)
@@ -197,9 +208,11 @@ struct MeetingsPane: View {
                         Text(Timeline.clock(record.durationSeconds))
                             .font(Theme.Typo.data(10))
                             .foregroundStyle(Theme.ink3)
+                            .accessibilityLabel(MeetingsPane.spokenLength(record.durationSeconds))
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(Theme.ink3)
+                            .accessibilityHidden(true)
                     }
                     .padding(.vertical, Theme.Space.base)
                     .contentShape(Rectangle())
@@ -208,8 +221,19 @@ struct MeetingsPane: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Opens this meeting's notes")
             }
         }
+    }
+
+    /// "42:07" on screen; "42 minutes" aloud.
+    static func spokenLength(_ seconds: Double) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        if minutes < 1 { return "Under a minute" }
+        if minutes < 60 { return minutes == 1 ? "1 minute" : "\(minutes) minutes" }
+        let hours = minutes / 60, rest = minutes % 60
+        let h = hours == 1 ? "1 hour" : "\(hours) hours"
+        return rest == 0 ? h : "\(h) \(rest) minute\(rest == 1 ? "" : "s")"
     }
 
     private var nowText: String {
@@ -260,6 +284,24 @@ private struct MeetingDetail: View {
     @State private var typed = ""
     /// Voices whose rename is still being written to disk.
     @State private var renaming: Set<Int> = []
+    /// "Write the notes": whether this meeting is one it is offered on (no
+    /// notes, and a transcript to write them from), and how it is going.
+    @State private var notesOffered: Bool
+    @State private var notesWriting: MeetingNotesWriter.State
+    private let isPosed: Bool
+
+    /// `posedNotes` is for a snapshot, which runs no task and waits for
+    /// nothing: the button as it stands in that state.
+    init(conductor: Conductor, record: MeetingRecord, onBack: @escaping () -> Void,
+         onChanged: @escaping () -> Void, posedNotes: MeetingNotesWriter.State? = nil) {
+        self.conductor = conductor
+        self.record = record
+        self.onBack = onBack
+        self.onChanged = onChanged
+        isPosed = posedNotes != nil
+        _notesOffered = State(initialValue: posedNotes != nil)
+        _notesWriting = State(initialValue: posedNotes ?? .idle)
+    }
 
     private var folder: URL { URL(fileURLWithPath: record.folder, isDirectory: true) }
 
@@ -271,6 +313,7 @@ private struct MeetingDetail: View {
                     title
                     audioNotes
                     summary
+                    writeNotes
                     screens
                     decisions
                     speakerNames
@@ -285,6 +328,11 @@ private struct MeetingDetail: View {
             }
         }
         .background(Theme.raised)
+        .task(id: record.folder + (record.summarised ? "+" : "-")) {
+            guard !isPosed, notesWriting == .idle else { return }
+            let record = record
+            notesOffered = await Task.detached { MeetingNotesWriter.isOffered(for: record) }.value
+        }
         .confirmationDialog("Delete this meeting?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 conductor.deleteMeeting(folder: folder)
@@ -307,6 +355,7 @@ private struct MeetingDetail: View {
                     HStack(spacing: Theme.Space.tight) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 10, weight: .semibold))
+                            .accessibilityHidden(true)
                         Text("All meetings")
                             .font(Theme.Typo.ui(12, weight: .semibold))
                     }
@@ -314,12 +363,14 @@ private struct MeetingDetail: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Back to all meetings")
 
                 Spacer()
 
                 Button { confirmingDelete = true } label: {
                     HStack(spacing: Theme.Space.snug) {
                         Image(systemName: "trash").font(.system(size: 10, weight: .medium))
+                            .accessibilityHidden(true)
                         Text("Delete").font(Theme.Typo.ui(12, weight: .semibold))
                     }
                     .foregroundStyle(Theme.bad)
@@ -332,6 +383,7 @@ private struct MeetingDetail: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Delete this meeting")
             }
             .padding(.horizontal, Theme.Space.wide)
             .padding(.vertical, Theme.Space.base)
@@ -373,6 +425,7 @@ private struct MeetingDetail: View {
                 .font(.system(size: 11))
                 .foregroundStyle(tint)
                 .padding(.top, 2)
+                .accessibilityHidden(true)
             Text(text)
                 .font(Theme.Typo.ui(12))
                 .foregroundStyle(tint)
@@ -401,6 +454,58 @@ private struct MeetingDetail: View {
                 .foregroundStyle(Theme.ink3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: Theme.measure, alignment: .leading)
+        }
+    }
+
+    /// A meeting with no notes and a transcript: write them now. The notes
+    /// failed, or the meeting was stopped early, and that used to be final.
+    @ViewBuilder private var writeNotes: some View {
+        if notesOffered {
+            VStack(alignment: .leading, spacing: Theme.Space.small) {
+                HStack(alignment: .top, spacing: Theme.Space.small) {
+                    if notesWriting == .writing {
+                        ProgressView().controlSize(.small)
+                            .accessibilityHidden(true)
+                    } else if case .failed = notesWriting {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.warn)
+                            .padding(.top, 2)
+                            .accessibilityHidden(true)
+                    }
+                    Text(MeetingNotesWriter.line(notesWriting))
+                        .font(Theme.Typo.ui(12))
+                        .foregroundStyle(Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if notesWriting != .writing {
+                    PaneButton(title: MeetingNotesWriter.buttonTitle(notesWriting), prominent: true) { startWritingNotes() }
+                        .help("Your AI reads the saved transcript and writes the notes")
+                }
+            }
+            .padding(Theme.Space.base)
+            .frame(maxWidth: Theme.measure, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(Theme.sunk)
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Notes for this meeting")
+        }
+    }
+
+    private func startWritingNotes() {
+        guard notesWriting != .writing else { return }
+        notesWriting = .writing
+        let folder = folder
+        let brain = HermesMeetingBrain(config: conductor.config, purpose: .notes, meetingID: "rewrite")
+        Task {
+            let result = await MeetingNotesWriter.write(folder: folder, brain: brain)
+            notesWriting = result
+            if result == .idle {
+                notesOffered = false
+                onChanged()
+            }
         }
     }
 
@@ -721,6 +826,13 @@ private struct CaptureThumb: View {
     let url: URL
     @State private var image: NSImage?
 
+    /// "Screenshot at 12:40. <what the AI saw in it>."
+    private var spoken: String {
+        let what = capture.kind == .recording ? "Clip" : "Screenshot"
+        let caption = capture.caption.map { $0.isEmpty ? "" : ". \($0)" } ?? ""
+        return "\(what) at \(Timeline.clock(capture.at))\(caption)"
+    }
+
     var body: some View {
         Button { NSWorkspace.shared.open(url) } label: {
             VStack(alignment: .leading, spacing: Theme.Space.tight) {
@@ -738,6 +850,7 @@ private struct CaptureThumb: View {
                             Image(systemName: capture.kind == .recording ? "film" : "photo")
                                 .font(.system(size: 20))
                                 .foregroundStyle(Theme.ink3)
+                                .accessibilityHidden(true)
                             if capture.kind == .recording, let d = capture.durationSeconds {
                                 Text(Timeline.clock(d)).font(Theme.Typo.data(10)).foregroundStyle(Theme.ink3)
                             }
@@ -760,6 +873,11 @@ private struct CaptureThumb: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken)
+        .accessibilityHint("Opens it")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { NSWorkspace.shared.open(url) }
         .onAppear {
             guard capture.kind == .screenshot, image == nil else { return }
             let u = url

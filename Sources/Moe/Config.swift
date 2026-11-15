@@ -123,6 +123,11 @@ struct Config: Codable {
     /// is what the island used to do, the chat page opens for it.
     var typedAnswersOpenChat: Bool = false
 
+    /// Hovering the notch opens its peek, or, while the chat is popped out,
+    /// brings that window forward. Off, a hover does nothing and only a
+    /// click opens it (the owner asked for the switch, 2026-11-14).
+    var notchHoverOpens: Bool = true
+
     /// Which speech engine speaks Moe's replies.
     /// "kokoro" (ANE, one voice), "pocket" (many voices + cloning),
     /// "supertonic" (fastest, 31 languages), "apple" (system voices, no
@@ -139,7 +144,6 @@ struct Config: Codable {
     /// commonly bind that, and when they win the race you get their behaviour
     /// — including a clipboard paste — instead of Moe.
     var hotKeyModifiers: UInt32 = 6144
-    var silenceSeconds: Double = 1.1     // end-of-turn after this much quiet
     /// Start Moe when the Mac signs in. On by default (docs/DEFAULTS.md
     /// row 30) — a menu-bar assistant should be there when the Mac is. Read
     /// by `LoginItem`, which registers the app with macOS once and after
@@ -165,9 +169,6 @@ struct Config: Codable {
     /// `AudioGate` for why it is held off while a call app has the mic.
     var echoCancellation: Bool = true
 
-    /// Use a modifier tap (⌃⌥, nothing else) instead of a key combination.
-    /// Needs Accessibility permission; the Carbon hotkey does not.
-    var useModifierTap: Bool = true
     /// The key you hold to talk (docs/DEFAULTS.md row 8). Right ⌥ to start
     /// with — the key beside the space bar that almost nothing else uses —
     /// and Settings › Voice offers right ⌘, right ⌃ and fn instead.
@@ -315,6 +316,20 @@ struct Config: Codable {
     /// paying for deliberation nobody asked for.
     var dictationPolishThinking: Bool = false
 
+    /// A spoken turn opens at the lowest reasoning effort the brain has.
+    ///
+    /// Somebody who has just stopped talking hears nothing until the first
+    /// words are written, and over 519 measured turns the model thought
+    /// before them on 56% — +0.8 to +3.0 s each, more the longer the
+    /// conversation (docs/SPEED-FINDINGS-2026-11-12.md §3). Moe only says
+    /// that the turn was spoken (`X-Hermes-Voice-Turn`); which level is
+    /// "lowest" is the brain's own answer per provider — off where the
+    /// provider allows off, its weakest level where it does not, and on the
+    /// plan route the opening of the turn only, with the person's own effort
+    /// back for whatever work follows a tool call. Typed turns are never
+    /// marked. Off here sends no mark and every turn thinks as it always did.
+    var spokenTurnsOpenQuick: Bool = true
+
     /// Which tier rewrites a dictation, when more than one is available.
     ///
     /// Empty means "whatever is fastest that works" — the ladder in
@@ -389,6 +404,15 @@ struct Config: Codable {
     /// channels alone are not consent to drafts and amounts from other
     /// conversations arriving there (the offer-path review, 2026-09-25).
     var situationOffersToChats: Bool = false
+
+    /// Settings › Away › Cloud browser: the sites the cloud computer's own
+    /// browser may stay signed in to while the Mac is off (docs/AWAY-BROWSER.md).
+    /// Opt-in per site: empty by default, so a sign-in made there lasts for
+    /// one job until the person adds its site. Always written, so the machine
+    /// can tell this Mac's choice (a list, enforced exactly) from an older
+    /// Mac's silence (no key: it prunes nothing). It travels sealed, as part
+    /// of `settings/background`; the edge never reads it.
+    var cloudBrowserSites: [String] = []
 
     /// Quiet hours, 22:00–08:00 in the person's own zone: what Moe raises
     /// on its own waits for the morning before it reaches their phone (the
@@ -481,9 +505,6 @@ struct Config: Codable {
     /// which is a configuration detail, not consent. Sending a meeting's
     /// notes off the Mac is a decision, and it is made here.
     var meetingSendTelegram: Bool = false
-    /// Hermes session the summary turns go to (its own, like dictation's,
-    /// so notes never land in the conversation). Minted on first use.
-    var meetingSessionID: String = ""
     /// The "Hold ⌥ and whisper, or click to type" hint has been shown once.
     var meetingHintShown: Bool = false
     /// Notice a call (Zoom, Meet, Teams… holding the microphone) and offer
@@ -661,15 +682,14 @@ struct Config: Codable {
         spokenProgress   = try c.decodeIfPresent(Bool.self,     forKey: .spokenProgress)   ?? d.spokenProgress
         replyChime       = try c.decodeIfPresent(Bool.self,     forKey: .replyChime)       ?? d.replyChime
         typedAnswersOpenChat = try c.decodeIfPresent(Bool.self, forKey: .typedAnswersOpenChat) ?? d.typedAnswersOpenChat
+        notchHoverOpens = try c.decodeIfPresent(Bool.self, forKey: .notchHoverOpens) ?? d.notchHoverOpens
         ttsEngine        = try c.decodeIfPresent(String.self,   forKey: .ttsEngine)        ?? d.ttsEngine
         ttsVoice         = try c.decodeIfPresent(String.self,   forKey: .ttsVoice)         ?? d.ttsVoice
         hotKeyCode       = try c.decodeIfPresent(UInt32.self,   forKey: .hotKeyCode)       ?? d.hotKeyCode
         hotKeyModifiers  = try c.decodeIfPresent(UInt32.self,   forKey: .hotKeyModifiers)  ?? d.hotKeyModifiers
-        silenceSeconds   = try c.decodeIfPresent(Double.self,   forKey: .silenceSeconds)   ?? d.silenceSeconds
         launchAtLogin    = try c.decodeIfPresent(Bool.self,     forKey: .launchAtLogin)    ?? d.launchAtLogin
         problemReportsAnonymous = try c.decodeIfPresent(Bool.self, forKey: .problemReportsAnonymous)
             ?? d.problemReportsAnonymous
-        useModifierTap   = try c.decodeIfPresent(Bool.self,     forKey: .useModifierTap)   ?? d.useModifierTap
         // A string, like `dictationKey`: an unknown key name falls back to
         // right ⌥ rather than taking the whole config down with it.
         let rawTalkKey   = try c.decodeIfPresent(String.self,   forKey: .talkKey)
@@ -712,6 +732,7 @@ struct Config: Codable {
         dictationPolishProvider = try c.decodeIfPresent(String.self, forKey: .dictationPolishProvider) ?? d.dictationPolishProvider
         dictationPolishTier = try c.decodeIfPresent(String.self, forKey: .dictationPolishTier) ?? d.dictationPolishTier
         dictationPolishThinking = try c.decodeIfPresent(Bool.self, forKey: .dictationPolishThinking) ?? d.dictationPolishThinking
+        spokenTurnsOpenQuick = try c.decodeIfPresent(Bool.self, forKey: .spokenTurnsOpenQuick) ?? d.spokenTurnsOpenQuick
         dictationContactsNames = try c.decodeIfPresent(Bool.self, forKey: .dictationContactsNames) ?? d.dictationContactsNames
         dictationCursorContext = try c.decodeIfPresent(Bool.self, forKey: .dictationCursorContext) ?? d.dictationCursorContext
         dictationScreenVocabulary = try c.decodeIfPresent(Bool.self, forKey: .dictationScreenVocabulary) ?? d.dictationScreenVocabulary
@@ -723,6 +744,8 @@ struct Config: Codable {
         situationOffers = try c.decodeIfPresent(Bool.self, forKey: .situationOffers) ?? d.situationOffers
         situationOffersToChats = try c.decodeIfPresent(Bool.self, forKey: .situationOffersToChats)
             ?? d.situationOffersToChats
+        cloudBrowserSites = try c.decodeIfPresent([String].self, forKey: .cloudBrowserSites)
+            ?? d.cloudBrowserSites
         quietHours       = try c.decodeIfPresent(Bool.self,     forKey: .quietHours)       ?? d.quietHours
         reminderChannels = try c.decodeIfPresent([String].self, forKey: .reminderChannels) ?? d.reminderChannels
         reminderChannelsAutoPicked = try c.decodeIfPresent(Bool.self, forKey: .reminderChannelsAutoPicked)
@@ -768,7 +791,6 @@ struct Config: Codable {
         meetingSummarise = try c.decodeIfPresent(Bool.self, forKey: .meetingSummarise) ?? d.meetingSummarise
         meetingHotkey = try c.decodeIfPresent(Bool.self, forKey: .meetingHotkey) ?? d.meetingHotkey
         meetingDeleteRecordings = try c.decodeIfPresent(Bool.self, forKey: .meetingDeleteRecordings) ?? d.meetingDeleteRecordings
-        meetingSessionID = try c.decodeIfPresent(String.self, forKey: .meetingSessionID) ?? d.meetingSessionID
         meetingHintShown = try c.decodeIfPresent(Bool.self, forKey: .meetingHintShown) ?? d.meetingHintShown
         meetingSendTelegram = try c.decodeIfPresent(Bool.self, forKey: .meetingSendTelegram) ?? d.meetingSendTelegram
         meetingAutoDetect = (try? c.decodeIfPresent(DetectMode.self, forKey: .meetingAutoDetect)) ?? d.meetingAutoDetect

@@ -138,7 +138,7 @@ struct LoopLedgerTests {
         moe.dismissalNoteForTests = { _ in }
         let calls = Calls()
         moe.loopLedger = Self.ledger(calls, reply: .init(exit: 0, answered: true, ok: true))
-        moe.queueReminder("Call the dentist before five.")
+        moe.queueReminder("Call the dentist before five.", origin: .init(moment: true))
         let n = try #require(moe.notices.first)
         moe.finishNotice(n.id)
         try await Task.sleep(nanoseconds: 100_000_000)

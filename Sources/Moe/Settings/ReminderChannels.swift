@@ -193,6 +193,14 @@ enum ReminderChannels {
         /// What it is about (docs/INBOX-QUIET.md decision 8): one open card
         /// per subject, updated in place. "" when the writer named none.
         var subject: String = ""
+        /// The file's `source`: who wrote it (`reach_owner`, `confirm`,
+        /// `cron`). Not the by-line (`source_label`, above). The inbox's bar
+        /// reads it (`InboxGate`): the brain reaching for the person on
+        /// purpose is shown, and a card's own withdrawal note is not.
+        var writer: String = ""
+        /// `time_critical: true` in the file: a pure FYI that cannot wait
+        /// (docs/INBOX-QUIET.md decision 1). Only ever a real JSON true.
+        var timeCritical = false
     }
 
     /// Say that the island dealt with a proactive message. Best effort:
@@ -211,18 +219,88 @@ enum ReminderChannels {
             attributes: [.posixPermissions: 0o600])
     }
 
+    /// The inbox files that would not parse, so each is read once.
+    ///
+    /// Keyed by name, with the size and modification time it had: a file
+    /// somebody then fixes or finishes writing is a different file and is
+    /// read again. Kept in memory only — one more read per launch is the
+    /// whole cost of forgetting, and nothing is moved or deleted, so the
+    /// file is still there for whoever wants a look.
+    final class Unreadable: @unchecked Sendable {
+        static let shared = Unreadable()
+
+        struct Stamp: Equatable {
+            let size: Int
+            let modified: Date?
+            init(of url: URL) {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+                size = (attrs?[.size] as? NSNumber)?.intValue ?? -1
+                modified = attrs?[.modificationDate] as? Date
+            }
+        }
+
+        private let lock = NSLock()
+        private var seen: [String: Stamp] = [:]
+
+        func isKnown(_ name: String, _ stamp: Stamp) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return seen[name] == stamp
+        }
+
+        /// Remember it. True the first time this name is noted, so the log
+        /// says it once rather than at every change.
+        @discardableResult
+        func note(_ name: String, _ stamp: Stamp) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            let new = seen[name] == nil
+            seen[name] = stamp
+            return new
+        }
+
+        /// Forget files that are gone, so the list cannot grow without end.
+        func keepOnly(_ names: [String]) {
+            lock.lock(); defer { lock.unlock() }
+            guard !seen.isEmpty else { return }
+            let present = Set(names)
+            seen = seen.filter { present.contains($0.key) }
+        }
+    }
+
+    /// Whether any message file is still in the inbox. A directory listing,
+    /// nothing read: what `Conductor.watchForInbox` asks after a pass, to
+    /// know whether something is waiting on more than a file changing.
+    static func hasWaiting(in dir: URL = inbox) -> Bool {
+        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .contains { $0.hasSuffix(".json") }
+    }
+
     /// Everything waiting, oldest first. Unreadable files are skipped, not
     /// deleted — the plugin writes atomically, so a half file is somebody
     /// else's, and a file that will not parse is worth a look.
-    static func pending() -> [Message] {
+    ///
+    /// Skipped *and remembered*: the inbox is looked at every five seconds,
+    /// and a file that would not parse was read and parsed again on every
+    /// one of them for as long as it sat there. It is read once now, and
+    /// again only if it changes (`Unreadable`).
+    static func pending(in dir: URL = inbox, remembering unreadable: Unreadable = .shared,
+                        read: (URL) -> Data? = { try? Data(contentsOf: $0) }) -> [Message] {
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: inbox.path) else { return [] }
-        return names.filter { $0.hasSuffix(".json") }.sorted().compactMap { name in
-            let url = inbox.appendingPathComponent(name)
-            guard let data = try? Data(contentsOf: url),
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+        let files = names.filter { $0.hasSuffix(".json") }.sorted()
+        unreadable.keepOnly(files)
+        return files.compactMap { name in
+            let url = dir.appendingPathComponent(name)
+            let stamp = Unreadable.Stamp(of: url)
+            if unreadable.isKnown(name, stamp) { return nil }
+            guard let data = read(url),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let text = obj["text"] as? String,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                if unreadable.note(name, stamp) {
+                    Log.write("inbox: \(name) is not a message Moe can read — left where it is, not read again unless it changes")
+                }
+                return nil
+            }
             // No `at`, or one that is not a number, is as old as it gets —
             // never "now". A held send (expired_text) is then shown as
             // expired, not as a fresh ask anyone could still answer, and a
@@ -247,7 +325,12 @@ enum ReminderChannels {
                            summary: obj["summary"] as? String ?? "",
                            options: (obj["options"] as? [String] ?? []).filter { !$0.isEmpty },
                            source: obj["source_label"] as? String ?? "",
-                           subject: obj["subject"] as? String ?? "")
+                           subject: obj["subject"] as? String ?? "",
+                           writer: (obj["source"] as? String ?? "")
+                               .trimmingCharacters(in: .whitespacesAndNewlines),
+                           timeCritical: (obj["time_critical"] as? NSNumber).map {
+                               CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue
+                           } ?? false)
         }
     }
 }

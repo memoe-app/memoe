@@ -146,11 +146,59 @@ CRON_SESSION_PREFIX = "cron_"
 # than a twenty-fourth. A person asking twenty-five things in one sitting is
 # ordinary, and an hourly cap that forbade it would fire on real use — while a
 # runaway held to a third a day still takes most of a day to catch.
+#
+# The paid numbers are the owner`s of 2026-11-13 (docs/PLANS-AND-CAPS-2026-11-13.md
+# §7 D5): Away 100 / 200, Away+ 200 / 500. The Composio proxy in the cloud carries
+# the same three pairs in its CAPS, and test-composio-budget.sh compares them.
 CAPS = {
     "free": (50, 150),
-    "away": (100, 300),
-    "away_plus": (200, 600),
+    "away": (100, 200),
+    "away_plus": (200, 500),
 }
+
+# --- looking is not doing --------------------------------------------------
+#
+# Until 2026-11-12 every Composio call drew on the allowance above, and the
+# system prompt REQUIRES a search before every brokered action
+# (configure-hermes.py: "run COMPOSIO_SEARCH_TOOLS for it"). So one request
+# from a person cost at least two calls — often three, with a schema fetch —
+# and a free Mac`s fifty an hour was nearer twenty things asked. The lookups
+# reach no service and touch nobody`s data: they are Moe reading the catalog.
+#
+# What a lookup IS, so that this is not a list of names a new name walks
+# past. A Composio tool slug is <TOOLKIT>_<ACTION>. Two things must both hold:
+#
+#   - the toolkit is COMPOSIO itself — the broker`s own meta tools, which
+#     talk to Composio about tools and never to Gmail or Slack. That half is
+#     structural: `GMAIL_SEARCH` and `GOOGLECONTACTS_SEARCH_CONTACTS` are
+#     searches OF a service, they are real brokered calls, and they count.
+#   - the action begins with a reading verb. This half IS a short list of
+#     words, said plainly: the slug carries nothing else to tell
+#     COMPOSIO_SEARCH_TOOLS from COMPOSIO_MULTI_EXECUTE_TOOL. What makes it
+#     safe is the direction it fails in — a meta tool with any verb not
+#     listed here (EXECUTE, MANAGE, REMOTE, or one invented next month) is
+#     COUNTED. A new name can only walk into the allowance, never past it.
+#
+# Not counted is not unbounded. The budget exists to stop a runaway of any
+# shape, and a loop that only ever searches is a shape. Lookups have their
+# own counters and their own ceiling, LOOKUP_FACTOR times the tier`s — room
+# for several lookups per action, and still a wall a loop hits within the
+# hour. And the clock rule is untouched: a scheduled turn on a free Mac is
+# refused its lookups like everything else.
+META_TOOLKIT = "COMPOSIO"
+LOOKUP_VERBS = ("SEARCH", "GET", "LIST", "FIND")
+LOOKUP_FACTOR = 4
+
+
+def is_lookup(tool_name):
+    """True for one of the broker`s own catalog lookups. Never raises."""
+    parts = tool_name.split("__")
+    if len(parts) < 3:
+        return False
+    slug = "__".join(parts[2:]).upper()
+    toolkit, _, action = slug.partition("_")
+    return toolkit == META_TOOLKIT and action.split("_", 1)[0] in LOOKUP_VERBS
+
 
 # Which tiers may run Composio on a clock. The gate rule in one line: anything
 # a person asks for is free, anything on a schedule is paid. Derived from CAPS
@@ -274,14 +322,41 @@ def tier():
         return "free"
 
 
+def machine_tier():
+    """The machine`s tier: `away` unless the edge has said `away_plus`.
+
+    The floor of the paid tiers, not the ceiling, is still the default. Until
+    2026-11-13 it was the ONLY answer — an Away+ person`s cloud computer, which
+    is where scheduled work runs, stopped at Away`s numbers (PLANS-AND-CAPS
+    G3). Now `/opt/moe/report-usage.py` writes `$HERMES_HOME/moe/tier.json`
+    from the edge`s own answer to `POST /v1/usage` (which reads
+    `moe.tenants.tier`), and this honours `away_plus` from it when it is fresh
+    by the same window a Mac`s file is held to. Anything else — missing,
+    unreadable, stale, `free`, an unknown word — is `away`: the machine exists
+    only for a paying tenant, so `away` is never an over-grant, and the edge
+    proxy counts the tenant`s real allowance whatever this file says.
+    """
+    try:
+        hermes_home = os.environ.get("HERMES_HOME") or os.path.join(
+            os.path.expanduser("~"), ".hermes")
+        with open(os.path.join(hermes_home, "moe", "tier.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or doc.get("tier") != "away_plus":
+            return "away"
+        checked = doc.get("checked_at")
+        if not isinstance(checked, (int, float)) or not math.isfinite(checked):
+            return "away"
+        age = time.time() - checked
+        if age > TIER_MAX_AGE or age < -TIER_FUTURE_SLACK:
+            return "away"
+        return "away_plus"
+    except Exception:
+        return "away"
+
+
 def _tier_or_raise():
     if on_the_machine:
-        # The floor of the paid tiers, not the ceiling. An `away_plus` machine
-        # gets what `away` gets until something on the machine writes a
-        # `tier.json`, which nothing does yet. That under-grants a paying
-        # person a few calls; the other direction would hand every machine the
-        # largest allowance on the strength of an environment variable.
-        return "away"
+        return machine_tier()
     with open(os.path.join(home, "cloud", "credential.json"), encoding="utf-8") as fh:
         credential = json.load(fh)
     if not isinstance(credential, dict):
@@ -322,6 +397,7 @@ on_a_clock = session.startswith(CRON_SESSION_PREFIX)
 
 TIER = tier()
 clocks_allowed = on_the_machine or TIER in CLOCK_TIERS
+LOOKUP = is_lookup(tool)
 
 
 # --- the counters ---------------------------------------------------------
@@ -340,6 +416,32 @@ BUDGET_DIR = os.path.join(home, "composio")
 BUDGET_FILE = os.path.join(BUDGET_DIR, "budget.json")
 LIMITS_FILE = os.path.join(BUDGET_DIR, "limits.json")
 LOCK_DIR = os.path.join(BUDGET_DIR, "budget.lock")
+# What the app reads to tell the PERSON, once, that a cap was hit. Until
+# 2026-11-12 the refusal below reached only the model, which said whatever it
+# made of it — or carried on as if the service were broken. Numbers and keys
+# only, never a sentence: the app writes the words (ComposioCapNotice), so
+# nothing that can write this file can put text in front of the person.
+NOTICE_FILE = os.path.join(BUDGET_DIR, "cap-notice.json")
+
+
+def note_cap_for_the_person(state, which, limit):
+    """Leave the notice, once per window. Never raises, never decides: a
+    notice that could not be written is a quieter refusal, not a different
+    one."""
+    key = hour_key if which == "hour" else day_key
+    mark = which + ":" + key
+    if state.get("cap_noticed") == mark:
+        return
+    state["cap_noticed"] = mark
+    try:
+        tmp = NOTICE_FILE + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"window": which, "key": key, "limit": limit, "tier": TIER, "at": stamp},
+                      fh, sort_keys=True)
+        os.replace(tmp, NOTICE_FILE)
+    except OSError:
+        pass
 
 
 def limits():
@@ -418,10 +520,10 @@ try:
         state = {}
 
     if state.get("day") != day_key:
-        state["day"], state["day_calls"] = day_key, 0
+        state["day"], state["day_calls"], state["day_lookups"] = day_key, 0, 0
     if state.get("hour") != hour_key:
-        state["hour"], state["hour_calls"] = hour_key, 0
-    for k in ("day_calls", "hour_calls"):
+        state["hour"], state["hour_calls"], state["hour_lookups"] = hour_key, 0, 0
+    for k in ("day_calls", "hour_calls", "day_lookups", "hour_lookups"):
         if not isinstance(state.get(k), int) or state[k] < 0:
             state[k] = 0
 
@@ -442,11 +544,30 @@ try:
                     "Composio-connected services are part of the paid plan, so "
                     "this one was skipped. Nothing is wrong and nothing is "
                     "disconnected: ask for it and Moe will look right now.")
+    elif LOOKUP:
+        # Reading the catalog: not drawn from the allowance, and bounded on
+        # its own so that a loop of lookups still meets a wall.
+        if (state["hour_lookups"] >= per_hour * LOOKUP_FACTOR
+                or state["day_lookups"] >= per_day * LOOKUP_FACTOR):
+            which = "hour" if state["hour_lookups"] >= per_hour * LOOKUP_FACTOR else "day"
+            state["lookup_blocks"] = (state.get("lookup_blocks") or 0) + 1
+            state["last_lookup_block"] = stamp
+            decision = ("BLOCK",
+                        "Moe has looked up tools for the connected services %d "
+                        "times this %s without that being what anyone asked "
+                        "for, and stopped. Use the tools already found, or say "
+                        "plainly that this cannot be done right now."
+                        % ((per_hour if which == "hour" else per_day) * LOOKUP_FACTOR, which))
+        else:
+            state["day_lookups"] += 1
+            state["hour_lookups"] += 1
+            state["last_lookup"] = stamp
     elif state["hour_calls"] >= per_hour or state["day_calls"] >= per_day:
         which = "hour" if state["hour_calls"] >= per_hour else "day"
         state["cap_blocks"] = (state.get("cap_blocks") or 0) + 1
         state["last_cap_block"] = stamp
         state["last_cap_window"] = which
+        note_cap_for_the_person(state, which, per_hour if which == "hour" else per_day)
         decision = ("BLOCK",
                     "Moe has used its whole %s of calls to the connected "
                     "services (%d this %s) and stopped rather than keep "

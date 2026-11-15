@@ -64,14 +64,35 @@ def _parse(path):
         return None
 
 
-def _registered(tree, consts, schemas):
-    """Tool names this module registers, as literals; unresolvable ones skipped."""
+def _sibling_aliases(tree):
+    """`from . import location as _location` → {"_location": "location"}."""
+    out = {}
+    # Anywhere in the module: moe-screen imports them inside register().
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and not node.module:
+            for a in node.names:
+                out[a.asname or a.name] = a.name
+    return out
+
+
+def _registered(tree, consts, schemas, siblings=None):
+    """Tool names this module registers, as literals; unresolvable ones skipped.
+
+    `siblings` maps a sibling module's alias to its constants, so
+    `name=_location.TOOL_NAME` resolves — moe-screen registered moe_location
+    and moe_open_settings that way, and neither was ever read here, so the
+    gate's table missed both and nothing went red (2026-11-14).
+    """
+    siblings = siblings or {}
 
     def resolve(node):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value                      # register_tool("blueprint_list", …)
         if isinstance(node, ast.Name):
             return consts.get(node.id)             # register_tool(name=CONNECTIONS_TOOL, …)
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and node.value.id in siblings):    # …name=_location.TOOL_NAME
+            return siblings[node.value.id].get(node.attr)
         if isinstance(node, ast.Subscript):        # …=_followups.TOOL_SCHEMA["name"]
             key = node.slice
             holder = node.value
@@ -122,7 +143,10 @@ def tool_names(root):
         schemas.update(file_schemas)
     names = set()
     for path, tree in trees:
-        names.update(_registered(tree, per_file[path], schemas))
+        here = os.path.dirname(path)
+        siblings = {alias: per_file.get(os.path.join(here, mod + ".py"), {})
+                    for alias, mod in _sibling_aliases(tree).items()}
+        names.update(_registered(tree, per_file[path], schemas, siblings))
     return sorted(names)
 
 

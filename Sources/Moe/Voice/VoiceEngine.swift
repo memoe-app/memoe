@@ -37,6 +37,15 @@ final class VoiceEngine {
     /// the premium voice running out of credits. Shown, never spoken, and it
     /// leaves the conversation where it is.
     var onNotice: ((String) -> Void)?
+    /// The microphone stopped working, or came back (`AudioFrontEnd`).
+    /// A status, not an error: said once on the change.
+    var onMicrophoneHealth: ((_ dead: Bool, _ message: String?) -> Void)?
+    /// What the front end last said about the microphone.
+    var microphoneDead: Bool { frontEnd.microphoneDead }
+    /// The front end's own report, for tests that drive it end to end.
+    func noteMicrophoneForTests(dead: Bool, message: String? = nil) {
+        frontEnd.noteMicrophone(dead: dead, message: message)
+    }
     var onLoadProgress: ((String) -> Void)?
     var onConversationEnded: (() -> Void)?
     /// The window has gone quiet: show the offer to close it. The island
@@ -260,12 +269,23 @@ final class VoiceEngine {
     /// A background retry of a VAD that failed to load; nil when none is
     /// running. One at a time.
     private var vadRetry: Task<Void, Never>?
+    /// The turn model's load, which keeps trying until it has one.
+    private var turnModelLoad: Task<Void, Never>?
     /// Consecutive wake matches refused because the voice did not match the
     /// enrolment. Reset by any wake that is accepted.
     private var wakesRefusedInARow = 0
-    /// Turned off for the rest of the session once the enrolment has
-    /// refused too many wakes in a row to be believed.
-    private var trustOwnerVoiceForWake = true
+    /// Turned off once the enrolment has refused too many wakes in a row to
+    /// be believed — and kept off across restarts (`WakeOwnerTrust`, a note
+    /// beside the enrolment), until the voice is taught again or forgotten.
+    /// In memory alone, every launch believed the bad enrolment afresh:
+    /// three more ignored wakes and the same error, each time.
+    private lazy var trustOwnerVoiceForWake: Bool = {
+        guard let doubt = wakeOwnerTrust.record else { return true }
+        Log.write("WAKE: the voice enrolment is not being asked about wakes — it refused \(doubt.refusals) in a row on \(doubt.since.formatted(date: .abbreviated, time: .shortened)); re-teaching the voice clears this")
+        return false
+    }()
+    private let wakeOwnerTrust = WakeOwnerTrust(
+        file: OwnerVoice.file.deletingLastPathComponent().appendingPathComponent("wake-owner-distrust.json"))
     /// How many refusals in a row before the enrolment is the likelier
     /// thing to be wrong. Three: a stranger saying the name three times
     /// running is rare, and a person whose Moe has stopped answering has
@@ -454,6 +474,7 @@ final class VoiceEngine {
         // must know when that would cut a sentence (`CallMicDebounce`).
         frontEnd.playbackBusy = { [weak self] in self?.speech.busy ?? false }
         frontEnd.onError = { [weak self] m in self?.onError?(m) }
+        frontEnd.onMicrophoneHealth = { [weak self] dead, m in self?.onMicrophoneHealth?(dead, m) }
     }
 
     /// Settings changed: the machine's tuning and the wake spotter follow.
@@ -664,17 +685,30 @@ final class VoiceEngine {
             // Off the critical path: an 8 MB download must never hold up
             // the first press. Until it lands, the endpointer and the
             // silence fallback end turns on their own.
+            //
+            // And if it does not land — offline, Hugging Face slow, a file
+            // that is not the pinned one — it is tried again later
+            // (`TurnModelRetry`), not given up on for the session. The log
+            // says which of the two ways turns are being ended, each time
+            // that changes.
             let detector = smartTurn
-            Task { [weak self] in
-                do {
-                    try await detector.load()
-                    await MainActor.run {
-                        self?.smartTurnReady = true
-                        self?.feed(.setTurnModel(true))
-                    }
-                } catch {
-                    Log.write("SMART TURN LOAD FAILED (continuing without): \(error)")
-                }
+            let fallbackSeconds = machine.tuning.silenceFallbackSeconds
+            turnModelLoad?.cancel()
+            turnModelLoad = Task { [weak self] in
+                let attempts = await TurnModelRetry.run(
+                    load: { try await detector.load() },
+                    sleep: { (try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))) != nil },
+                    onFailure: { failures, error, retryIn in
+                        Log.write("SMART TURN LOAD FAILED (attempt \(failures)): \(error.localizedDescription)")
+                        Log.write(String(format: "endpointing: SILENCE TIMER only (%.1f s after speech stops) — no turn model; trying again in %.0f s",
+                                         fallbackSeconds, retryIn))
+                    })
+                guard let attempts, let self else { return }
+                let name = await detector.modelName ?? "turn model"
+                self.smartTurnReady = true
+                self.feed(.setTurnModel(true))
+                Log.write("endpointing: TURN MODEL (\(name)) live"
+                          + (attempts > 1 ? " — loaded on attempt \(attempts); the silence timer is the fallback again" : ""))
             }
 
             // Side by side, not one after the other. They share nothing,
@@ -694,7 +728,7 @@ final class VoiceEngine {
                     self.flushHeldSpeech()
                 } catch {
                     Log.write("VOICE LOAD FAILED: \(error)")
-                    self.onError?("Couldn't load the voice: \(error.localizedDescription)")
+                    self.onError?("I couldn't get my voice ready, so I can't speak yet. Quit Memoe and open it again.")
                 }
             }
 
@@ -708,7 +742,7 @@ final class VoiceEngine {
                 applyWakeHeadPolicy()
             } catch {
                 Log.write("ACCURATE MODEL LOAD FAILED: \(error)")
-                onError?("Couldn't load the speech model for \(SpeechLanguages.entry(for: config.locale)?.englishName ?? config.locale): \(error.localizedDescription)")
+                onError?("I couldn't get ready to hear \(SpeechLanguages.entry(for: config.locale)?.englishName ?? config.locale). Check your internet connection, then quit Memoe and open it again.")
             }
             await voiceLoad.value
 
@@ -721,7 +755,7 @@ final class VoiceEngine {
             stt.warmCloud(locale: config.locale)
         } catch {
             Log.write("MODEL LOAD FAILED: \(error)")
-            onError?("Couldn't load the voice models: \(error.localizedDescription)")
+            onError?("I couldn't get ready to listen. Quit Memoe and open it again — if it keeps happening, download Memoe again from memoe.app.")
         }
         // Whether it got there or not. A caller waiting to listen must be
         // let go either way, and it checks the flag rather than assuming.
@@ -931,7 +965,7 @@ final class VoiceEngine {
             onLoadProgress?("")
         } catch {
             Log.write("LANGUAGE MODEL LOAD FAILED: \(error)")
-            onError?("Couldn't load the speech model for that language: \(error.localizedDescription)")
+            onError?("I couldn't get ready to hear \(SpeechLanguages.entry(for: locale)?.englishName ?? "that language"). Check your internet connection, then pick it again.")
         }
     }
 
@@ -1543,10 +1577,11 @@ final class VoiceEngine {
         switch action {
         case .audio(let on):
             if on {
-                do { try frontEnd.start() } catch {
-                    Log.write("AUDIO GRAPH FAILED: \(error)")
-                    onError?("Microphone unavailable: \(error.localizedDescription)")
-                }
+                // A graph that will not start is retried, then started
+                // without voice processing, before anything is said
+                // (`CaptureRecovery`); the one error comes through
+                // `frontEnd.onError`, and `onRestarted` when it is back.
+                frontEnd.startOrRecover()
             } else {
                 frontEnd.scheduleTeardown(after: idleTeardownSeconds)
             }
@@ -2032,6 +2067,7 @@ final class VoiceEngine {
         case .submit(let text):
             closeWhenDrained = false
             mark(\.submittedMs)
+            noteBrain()
             speech.beginReply()
             // Spoken addresses, written. Dictation has had a cleanup pass
             // and an optional polish pass for a long time; what is *said*
@@ -2046,6 +2082,7 @@ final class VoiceEngine {
         case .submitContinuation(let text):
             closeWhenDrained = false
             mark(\.submittedMs)
+            noteBrain()
             speech.beginReply()
             Log.write("turn: continued — the pause was a breath; asking again with both halves (\(text.split(separator: " ").count) words)")
             onContinuation?(SpokenAddress.rewrite(text))
@@ -2596,11 +2633,23 @@ final class VoiceEngine {
         let stored = await ownerVoice.storedTurns
         _ = await ownerVoice.enrol(audio, known: stored < OwnerVoice.seedCount)
         let turns = await ownerVoice.storedTurns
-        return turns > stored ? .enrolled(turns: turns) : .heardNothing
+        guard turns > stored else { return .heardNothing }
+        // The voice has been taught again: the doubt was about the old one.
+        believeOwnerVoiceAgain()
+        return .enrolled(turns: turns)
     }
 
     func forgetOwnerVoice() async {
         await ownerVoice.forget()
+        // No enrolment, nothing to doubt — and the next one starts trusted.
+        believeOwnerVoiceAgain()
+    }
+
+    private func believeOwnerVoiceAgain() {
+        if !trustOwnerVoiceForWake { Log.write("WAKE: the voice was re-taught — asking it about wakes again") }
+        wakeOwnerTrust.clear()
+        trustOwnerVoiceForWake = true
+        wakesRefusedInARow = 0
     }
 
     // MARK: - Teach Moe its name (Settings › Voice)
@@ -3450,6 +3499,7 @@ final class VoiceEngine {
                     if self.wakesRefusedInARow >= Self.wakeRefusalsBeforeDoubt {
                         Log.write("WAKE: \(self.wakesRefusedInARow) refusals in a row — trusting the head over the enrolment from here")
                         self.trustOwnerVoiceForWake = false
+                        self.wakeOwnerTrust.distrust(refusals: self.wakesRefusedInARow)
                         self.onError?("Moe was ignoring “Hey Moe” because it did not recognise your voice. It has stopped doing that — if it now wakes for other people, re-teach it your voice in Settings › Voice.")
                         self.acceptWake(score)
                     }
@@ -3681,6 +3731,12 @@ final class VoiceEngine {
                 try? side.write(to: dir.appendingPathComponent(json))
             }
         }
+    }
+
+    /// The route this turn is asked on, for the trace (`TurnTrace.brain`).
+    private func noteBrain() {
+        trace?.brain = config.brainProvider.rawValue
+        trace?.model = config.brainModel.isEmpty ? nil : config.brainModel
     }
 
     private func writeTraceLine(_ t: TurnTrace) {

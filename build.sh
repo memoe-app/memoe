@@ -12,6 +12,17 @@ APP="dist/Memoe.app"
 # The commit this build came from, stamped into the bundle below.
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then COMMIT="$COMMIT+dirty"; fi
+# Whether this build is the one being published. Every build between two
+# releases carries the last release's CFBundleShortVersionString and
+# CFBundleVersion — those are Sparkle's, and they move only when a release is
+# cut — so a catch-up build of main and the published image both said
+# "0.3.24 (31)" and a problem report could not tell them apart.
+# publish-release.sh sets MOE_RELEASE_IS_PUBLISHED for the one build that goes
+# to everybody; anything else says "unreleased build" beside its commit, in
+# Settings › About and in `--build-info` (BuildInfo.swift). The two version
+# keys are not touched.
+MOE_RELEASE_BUILD=0
+[ "${MOE_RELEASE_IS_PUBLISHED:-0}" = 1 ] && MOE_RELEASE_BUILD=1
 
 # ── Which Moe is this: the one the person uses, or one we are working on ──
 #
@@ -109,6 +120,56 @@ fi
 # and read by Config.defaultCloudEdge. `${VAR-…}` so an explicit empty string
 # turns the cloud off even in an official checkout.
 MOE_CLOUD_EDGE="${MOE_CLOUD_EDGE-$MOE_ID_CLOUD_EDGE}"
+
+# MOE_ON_DEMAND_COMPONENTS — the one switch for the slim download
+# (docs/SLIM-DOWNLOAD.md). Stamped into Info.plist as MoeOnDemandComponents.
+#
+#   off      every model is in the app, and nothing else happens.
+#   prepare  still every model in the app, and the app copies the on-demand
+#            ones out of itself into the model cache at launch. Ship this ONE
+#            RELEASE BEFORE `on`, so an install that updates to the slim build
+#            already has them as real folders and re-downloads nothing.
+#   on       the slim build: the folders named by ON_DEMAND_MODELS in
+#            scripts/fetch-models.sh are left out of the app, which fetches
+#            each the first time it is needed — pinned commit, sha256 per file.
+#
+# Anything else is refused: a typo here must not be read as either answer.
+#
+# **What a build gets when nobody says** comes from scripts/on-demand-plan.txt,
+# by the version this file carries: a real Memoe — official edition, not Dev —
+# takes the mode planned for its release, so 0.3.25 is `prepare` because the
+# plan says so and not because whoever ran ship.sh remembered a variable.
+# Here rather than in ship.sh, install.sh or catch-up.sh because every one of
+# them ends up on this line, and a stale copy of any of them does too.
+#
+# Memoe Dev and a community build stay `off` unless asked: Dev shares the
+# model caches with the real Memoe (Models.swift) and must not be the thing
+# that rearranges them, and a community build carries no models to keep.
+ON_DEMAND_VERSION="$(sed -n 's/.*CFBundleShortVersionString<\/key><string>\([^<]*\)<.*/\1/p' build.sh | head -1)"
+ON_DEMAND_PLANNED=off
+if [ "$MOE_EDITION" = official ] && [ "$MOE_DEV" != 1 ]; then
+  if ! ON_DEMAND_PLANNED="$(./scripts/on-demand-plan.sh mode "$ON_DEMAND_VERSION")"; then
+    echo "✗ cannot tell what version '$ON_DEMAND_VERSION' does about the on-demand models" >&2
+    echo "  (scripts/on-demand-plan.txt). Not guessing: a wrong answer either ships a" >&2
+    echo "  slim app nobody prepared for, or skips the release that prepares for it." >&2
+    exit 1
+  fi
+fi
+MOE_ON_DEMAND_COMPONENTS="${MOE_ON_DEMAND_COMPONENTS:-$ON_DEMAND_PLANNED}"
+case "$MOE_ON_DEMAND_COMPONENTS" in
+  off|prepare|on) ;;
+  *) echo "✗ MOE_ON_DEMAND_COMPONENTS is '$MOE_ON_DEMAND_COMPONENTS' — off, prepare or on" >&2; exit 1 ;;
+esac
+# The build that goes to everybody is the planned one or it is not built.
+# publish-release.sh asks the same question of the finished image; this is the
+# same refusal forty minutes earlier, before the compiler and the notary.
+if [ "$MOE_RELEASE_BUILD" = 1 ] && [ "$MOE_ON_DEMAND_COMPONENTS" != "$ON_DEMAND_PLANNED" ]; then
+  echo "✗ this is the published build of $ON_DEMAND_VERSION, whose plan is '$ON_DEMAND_PLANNED'" >&2
+  echo "  (scripts/on-demand-plan.txt), but MOE_ON_DEMAND_COMPONENTS is '$MOE_ON_DEMAND_COMPONENTS'." >&2
+  echo "  Unset it, or change the plan in a commit — never for one build." >&2
+  exit 1
+fi
+[ "$MOE_ON_DEMAND_COMPONENTS" = off ] || echo "  on demand: $MOE_ON_DEMAND_COMPONENTS (plan for $ON_DEMAND_VERSION: $ON_DEMAND_PLANNED)"
 
 # MOE_BUILD_STAGE_ONLY=<dir>: assemble the bundle at <dir> — the real
 # Info.plist, the real Resources — and stop before the compiler and before the
@@ -567,12 +628,24 @@ if [ -d Models ] && [ -z "$STAGE_ONLY" ]; then
       echo "  mapping for. Add one here in the same commit that added it." >&2
       exit 1 ;;
   esac
+
+  # The on-demand components. Nothing here runs in the default build.
+  # scripts/slim-bundled-models.sh says what it checks and why, and is a
+  # separate script so scripts/test-slim.sh can watch it refuse. It runs
+  # after check-bundled-models.sh on purpose: that check wants every listed
+  # model present, and this is the only thing allowed to take one away.
+  if [ "$MOE_ON_DEMAND_COMPONENTS" != off ]; then
+    if ! ./scripts/slim-bundled-models.sh "$MOE_ON_DEMAND_COMPONENTS" Models "$APP/Contents/Resources/Models"; then
+      exit 1
+    fi
+  fi
+
   if [ -n "$need" ] && [ ! -d "$APP/Contents/Resources/Models/$need" ]; then
     echo "✗ the default voice is '$want' but $need is not in the bundle." >&2
     echo "  Run ./scripts/fetch-models.sh in this checkout, or change the default." >&2
     exit 1
   fi
-  echo "  models:  $(du -sh "$APP/Contents/Resources/Models" | cut -f1) ($(ls Models | tr '\n' ' '))"
+  echo "  models:  $(du -sh "$APP/Contents/Resources/Models" | cut -f1) ($(ls "$APP/Contents/Resources/Models" | tr '\n' ' '))"
 elif [ -z "$STAGE_ONLY" ] && [ "$MOE_ID_REQUIRE_MODELS" != 1 ]; then
   # A community build: no models is fine. The app downloads each one the
   # first time it is needed (Models.swift), and scripts/fetch-models.sh needs
@@ -672,7 +745,7 @@ if [ -d hermes-seed ] && [ -z "$STAGE_ONLY" ]; then
   # that died on `import encodings`, so every download was a Moe whose brain
   # could not boot. Only running it can tell the two apart.
   ./scripts/check-hermes-seed-runs.sh hermes-seed || exit 1
-  # Size and shape: ~646 MB, no Chrome for Testing (fetched on first launch),
+  # Size and shape: ~687 MB, no Chrome for Testing (fetched on first launch),
   # no build-time headers. Floor and ceiling and why: check-hermes-seed-size.sh.
   ./scripts/check-hermes-seed-size.sh "$APP/Contents/Resources/hermes-seed" || exit 1
   echo "  hermes:  $(du -sh "$APP/Contents/Resources/hermes-seed" | cut -f1) seeded"
@@ -857,8 +930,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
        company's, and the name here is the same one the Terms of Service
        name as the other party — moebot.app/terms. -->
   <key>NSHumanReadableCopyright</key>  <string>Copyright © 2026 Yisrael Gottlieb. All rights reserved.</string>
-  <key>CFBundleShortVersionString</key><string>0.3.24</string>
-  <key>CFBundleVersion</key>           <string>31</string>
+  <key>CFBundleShortVersionString</key><string>0.3.25</string>
+  <key>CFBundleVersion</key>           <string>32</string>
   <!-- Which tree this binary came from. Without it CFBundleVersion is the
        only thing telling two builds apart, so an app built before a merge
        and one built after are both "16" — which is exactly how a missing
@@ -866,6 +939,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
        "+dirty" when the checkout had uncommitted changes, because a build
        from an edited tree matches no commit at all. -->
   <key>MoeCommit</key>                 <string>$COMMIT</string>
+  <!-- 1 for the build publish-release.sh makes for everybody, 0 for every
+       other build of the same version. See MOE_RELEASE_BUILD above. -->
+  <key>MoeReleaseBuild</key>           <string>$MOE_RELEASE_BUILD</string>
   <!-- Whether this is a development build, readable without launching it:
        `defaults read /Applications/Memoe*.app/Contents/Info MoeDev`. The
        identifier above already says so, but a plain yes/no is what a
@@ -877,6 +953,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
        home however it is started. -->
   <key>MoeHome</key>                   <string>$MOE_HOME_DEFAULT</string>
   <key>MoeCloudEdge</key>              <string>$MOE_CLOUD_EDGE</string>
+  <!-- off, prepare or on: whether this build carries every model, carries
+       them and copies the on-demand ones out, or leaves those out and
+       fetches them. OnDemandMode reads it; docs/SLIM-DOWNLOAD.md. -->
+  <key>MoeOnDemandComponents</key>     <string>$MOE_ON_DEMAND_COMPONENTS</string>
   <key>LSMinimumSystemVersion</key>    <string>15.0</string>
 
   <!-- The link the page Stripe lands on opens: moe://checkout?status=success
@@ -921,6 +1001,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>Moe reads your reminders so it knows what you still owe people, and adds reminders when you ask. Nothing leaves this Mac.</string>
   <key>NSContactsUsageDescription</key>
   <string>Moe looks up the people you mention, and — if you switch it on in Settings › Voice — spells their names right when you dictate.</string>
+  <!-- Asked the first time a question needs a place (moe_location), never
+       at launch. macOS 11+ reads the WhenInUse key; the bare one is what
+       older documentation names for the Mac, and costs nothing to carry. -->
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Moe uses this Mac’s location to answer when you ask something that depends on where you are, like the weather or what’s nearby. Only when you ask, never in the background.</string>
+  <key>NSLocationUsageDescription</key>
+  <string>Moe uses this Mac’s location to answer when you ask something that depends on where you are, like the weather or what’s nearby. Only when you ask, never in the background.</string>
 $SPARKLE_PLIST$LICENCE_PLIST$TELEGRAM_PLIST
 </dict>
 </plist>

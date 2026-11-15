@@ -64,85 +64,26 @@ struct Fail: Error, CustomStringConvertible {
     init(_ d: String) { description = d }
 }
 
-// MARK: - The old footer
-
-/// The footer lines of an existing `summary.md`, unwrapped from their
-/// italics, or none when the file has no footer or is not there. They are
-/// facts about the recording — drift, off-the-record spans, why the audio
-/// was kept — which this pass has no way to recompute and no business
-/// dropping.
-func existingFooter(_ summary: URL) -> [String] {
-    guard let text = try? String(contentsOf: summary, encoding: .utf8),
-          let block = text.components(separatedBy: "\n---\n\n").last,
-          block != text else { return [] }
-    return block.split(separator: "\n").map {
-        var line = $0.trimmingCharacters(in: .whitespaces)
-        if line.hasPrefix("_") { line.removeFirst() }
-        if line.hasSuffix("_") { line.removeLast() }
-        return line
-    }.filter { !$0.isEmpty }
-}
-
 // MARK: - One meeting
 
+/// The work is `MeetingNotesRewrite.run`, in MoeMeeting, which the Meetings
+/// pane's "Write the notes" calls too. This only says what happened.
 @discardableResult
 func redo(_ folder: URL, brain: MeetingBrain, dryRun: Bool) async -> Bool {
     let name = folder.lastPathComponent
-    let recordURL = folder.appendingPathComponent("meeting.json")
-    let summaryURL = folder.appendingPathComponent("summary.md")
-
-    guard let recordData = try? Data(contentsOf: recordURL),
-          var record = try? MeetingRecord.decoder().decode(MeetingRecord.self, from: recordData) else {
-        print("· \(name): no readable meeting.json, skipped")
+    switch await MeetingNotesRewrite.run(folder: folder, brain: brain, dryRun: dryRun) {
+    case .failure(let failure):
+        switch failure {
+        case .noRecord, .noTranscript: print("· \(name): \(failure.detail), skipped")
+        default: print("✗ \(name): \(failure.detail)")
+        }
         return false
-    }
-    let transcriptURL = folder.appendingPathComponent(record.transcriptFile)
-    guard let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8),
-          !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-        print("· \(name): transcript is empty or missing, skipped")
-        return false
-    }
-
-    let before = record.notes?.actionItems.count ?? 0
-    let reply: String
-    do {
-        reply = try await brain.complete(
-            system: MeetingSummaryPrompt.system,
-            user: MeetingSummaryPrompt.user(transcript: transcript, date: record.startedAt,
-                                            duration: record.durationSeconds, bookmarks: record.bookmarks))
-    } catch {
-        print("✗ \(name): \(error)")
-        return false
-    }
-    guard var notes = MeetingNotes.parse(reply) else {
-        print("✗ \(name): the reply was not notes, left alone")
-        return false
-    }
-    // The summary's own list goes through the same sieve as a live scan's,
-    // because a single pass over a long transcript repeats itself too.
-    notes.actionItems = ActionItemScan.merge(notes.actionItems, [])
-
-    let markdown = notes.markdown(date: record.startedAt, duration: record.durationSeconds,
-                                  bookmarks: record.bookmarks, captures: record.captures, footer: existingFooter(summaryURL))
-    let delta = "\(before) → \(notes.actionItems.count) action items, \(notes.todos.count) to do"
-    guard !dryRun else {
-        print("· \(name): would rewrite — \(delta)")
+    case .success(let done):
+        let notes = done.record.notes
+        let delta = "\(done.actionItemsBefore) → \(notes?.actionItems.count ?? 0) action items, \(notes?.todos.count ?? 0) to do"
+        print(dryRun ? "· \(name): would rewrite — \(delta)" : "✓ \(name): \(delta)")
         return true
     }
-
-    record.notes = notes
-    record.summarised = true
-    record.summaryFile = "summary.md"
-    record.summaryFailure = nil
-    do {
-        try markdown.write(to: summaryURL, atomically: true, encoding: .utf8)
-        try record.json().write(to: recordURL, options: .atomic)
-    } catch {
-        print("✗ \(name): could not write — \(error.localizedDescription)")
-        return false
-    }
-    print("✓ \(name): \(delta)")
-    return true
 }
 
 // MARK: - Main

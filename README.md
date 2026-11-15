@@ -60,9 +60,10 @@ Prefer to build it yourself? Jump to [Build from source](#build-from-source).
 ## What it does
 
 - **Lives in the notch, not a window.** Hold right ⌥ in whatever app you
-  are in (or double-tap it, or say "Hey Moe") and talk. Moe answers out loud
-  and on a small panel under the notch, and you can interrupt it at any time.
-  A Mac without a notch gets a small black tab in the menu bar instead.
+  are in, or double-tap it, and talk. ("Hey Moe" works too, once you turn it
+  on in Settings.) Moe answers out loud and on a small panel under the notch,
+  and you can interrupt it at any time. A Mac without a notch gets a small
+  black tab in the menu bar instead.
 - **Does the work on your Mac.** It opens apps, uses their menus, fills in
   fields and uses its own browser for the web. It tries the app's data and
   scripting first and clicks only as a last resort, in the background, so your
@@ -284,7 +285,7 @@ Memoe did not build the hard parts, and says so.
 - [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift) by Argmax: Whisper on Core ML (MIT)
 - [Sparkle](https://github.com/sparkle-project/Sparkle): updates (MIT)
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime): wake word and turn detection (MIT)
-- [OpenWhispr](https://github.com/OpenWhispr/OpenWhispr): dictation cleanup prompts, adapted (MIT)
+- [OpenWhispr](https://github.com/OpenWhispr/OpenWhispr): transcript cleanup prompts, adapted (MIT)
 - Models: NVIDIA Parakeet TDT 0.6B v3 and TDT-CTC 110M (CC-BY-4.0), Parakeet Realtime EOU 120M (NVIDIA Open Model License), OpenAI Whisper large-v3-turbo (MIT), hexgrad Kokoro-82M (Apache-2.0)
 
 The complete list, with every licence and attribution, is in [NOTICE](NOTICE)

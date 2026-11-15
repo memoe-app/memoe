@@ -24,7 +24,7 @@ status)
        osascript -e 'tell application "Contacts" to return count of people' >/dev/null 2>&1; then
     echo "ok: reading Contacts"
   else
-    echo "needs-setup: allow Moe to read your Contacts (System Settings › Privacy & Security › Contacts)"
+    echo "needs-setup: allow Memoe to read your Contacts (System Settings › Privacy & Security › Contacts)"
     exit 1
   fi
   ;;

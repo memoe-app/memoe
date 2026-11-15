@@ -87,9 +87,13 @@ protocol CloudLink: AnyObject {
     // MARK: Everything else the conductor reports
     func brainChanged(_ why: String)
     func spokenTurnAnswered()
+    /// A turn a person started, spoken or typed, got a real answer.
+    func personTurnAnswered()
     /// A card for the island about carrying a connection to the cloud.
     func carryReminderDue(now: Date) -> (id: String, text: String)?
     func carryReminderAnswered(_ id: String, never: Bool)
+    /// Open the checkout for a pack (`voice`, `hours`) a card's button names.
+    func buyPack(_ pack: String)
     /// A `moe://` link the app was opened with; true when it was the cloud's.
     func open(_ url: URL, conductor: Conductor) -> Bool
 
@@ -123,6 +127,7 @@ protocol CloudLink: AnyObject {
 
 extension CloudLink {
     func attach(_ conductor: Conductor) {}
+    func buyPack(_ pack: String) {}
     func launched() {}
     func quitting() {}
     func presenceStarted() {}
@@ -137,6 +142,7 @@ extension CloudLink {
     func threadDeleted(_ id: String) {}
     func brainChanged(_ why: String) {}
     func spokenTurnAnswered() {}
+    func personTurnAnswered() {}
     func carryReminderDue(now: Date) -> (id: String, text: String)? { nil }
     func carryReminderAnswered(_ id: String, never: Bool) {}
     func open(_ url: URL, conductor: Conductor) -> Bool { false }

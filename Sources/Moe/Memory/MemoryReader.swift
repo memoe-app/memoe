@@ -217,13 +217,29 @@ enum MemoryReader {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("learn/profile.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/learn/profile.py")
+        if let c = Payload.checkoutPath("moe-home/learn/profile.py") { candidates.append(c) }
         return candidates.first { !$0.isEmpty && FileManager.default.isReadableFile(atPath: $0) }
     }
 
     // MARK: Reading
 
-    static func lines() -> [MemoryLine] {
+    static func lines() -> [MemoryLine] { read().lines }
+
+    /// What the page shows, and whether Moe was able to look at all.
+    struct Reading {
+        var lines: [MemoryLine] = []
+        /// What Moe has learned about the person could not be read — the
+        /// reader is missing or would not run. Not the same as there being
+        /// nothing, and the page must not say "Nothing about you yet" then.
+        var couldntLook = false
+    }
+
+    /// The page's one line when it could not read, in place of an empty
+    /// section's "Nothing about you yet." — which is a different answer.
+    static let couldntLookLine =
+        "Moe couldn't look at what it knows about you just now. Nothing has been lost — open this page again in a moment."
+
+    static func read() -> Reading {
         var out: [MemoryLine] = hermesLines() ?? []
         if out.isEmpty { for e in HermesMemory.read() {
             out.append(MemoryLine(id: "hermes:" + e.id,
@@ -233,10 +249,11 @@ enum MemoryReader {
                                   source: "A conversation",
                                   sureness: nil))
         } }
-        out += claims()
+        let learned = claimsIfReadable()
+        out += learned ?? []
         out += tidied()
         out += revivals()
-        return out
+        return Reading(lines: out, couldntLook: learned == nil)
     }
 
     /// What the nightly tidy set aside in the last 30 days, as Past lines
@@ -306,10 +323,22 @@ enum MemoryReader {
 
     /// The crawl's claims, through profile.py so the ids are the ones its
     /// correct/delete/restore take.
-    static func claims() -> [MemoryLine] {
-        guard let script = profileScript() else { return [] }
-        let r = ScriptRunner.run("/usr/bin/python3", [script, "list", "--json"], timeout: 20)
-        guard r.status == 0 else { return [] }
+    static func claims() -> [MemoryLine] { claimsIfReadable() ?? [] }
+
+    /// Nil when profile.py is missing or would not run. An empty profile is
+    /// `[]` with exit 0 (measured against a fresh home), so nil is never
+    /// "nothing learned yet" — it is "could not look", and the log says why.
+    static func claimsIfReadable() -> [MemoryLine]? {
+        guard let script = profileScript() else {
+            Log.write("memory: profile.py is not installed; the page cannot read what Moe has learned")
+            return nil
+        }
+        let r = ScriptRunner.run(BrainSetup.python(), [script, "list", "--json"], timeout: 20)
+        guard r.status == 0 else {
+            Log.write("memory: profile.py list did not run (status \(r.status)\(r.timedOut ? ", timed out" : "")): "
+                      + ScriptRunner.Result.humanLine(in: r.output))
+            return nil
+        }
         return parseClaims(r.output)
     }
 
@@ -324,12 +353,12 @@ enum MemoryReader {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes-plugins/claimstore/cli.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes-plugins/claimstore/cli.py")
+        if let c = Payload.checkoutPath("moe-home/hermes-plugins/claimstore/cli.py") { candidates.append(c) }
         return candidates.first { !$0.isEmpty && FileManager.default.isReadableFile(atPath: $0) }
     }
 
     /// Hermes's own interpreter: cli.py seals with `cryptography` and
-    /// projects with Hermes's `tools.memory_tool`; /usr/bin/python3 has neither.
+    /// projects with Hermes's `tools.memory_tool`; no other Python has either.
     static func hermesPython() -> String? {
         if let env = TestHooks.env("MOE_HERMES_PYTHON") { return env }
         let venv = HermesMemory.dir().deletingLastPathComponent()
@@ -527,7 +556,7 @@ enum MemoryReader {
     /// profile.py predates the verb; the open questions stand in then.
     static func checkList() -> [MemoryCheck]? {
         guard let script = profileScript() else { return nil }
-        let r = ScriptRunner.run("/usr/bin/python3", [script, "check", "--json"], timeout: 20)
+        let r = ScriptRunner.run(BrainSetup.python(), [script, "check", "--json"], timeout: 20)
         guard r.status == 0 else { return nil }
         return parseChecks(r.output)
     }
@@ -738,7 +767,7 @@ enum MemoryReader {
     }
 
     /// Runs one profile command. Nil on success, else the sentence to show.
-    static func run(_ argv: [String], python: String = "/usr/bin/python3",
+    static func run(_ argv: [String], python: String = BrainSetup.python(),
                     extraEnv: [String: String] = [:]) -> String? {
         let r = ScriptRunner.run(python, argv, extraEnv: extraEnv, timeout: 20)
         guard r.status != 0 else { return nil }

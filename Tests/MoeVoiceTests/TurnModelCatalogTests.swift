@@ -13,12 +13,97 @@ struct TurnModelCatalogTests {
                                     url: URL(string: "https://example.invalid/candidate.onnx")!,
                                     sha256: String(repeating: "a", count: 64), bytes: 0)
 
-    /// What ships is exactly the file Moe always loaded: v3.2, from Hugging Face.
-    @Test func v32IsWhatShips() {
+    /// What ships is exactly the file Moe always loaded: v3.2, from Hugging
+    /// Face — now from a named commit and pinned to its hash, which is Hugging
+    /// Face's LFS record for the file and `shasum -a 256` of the copy on the
+    /// owner's Mac (8,679,182 bytes), read 2026-11-12.
+    @Test func v32IsWhatShipsAndItIsPinned() {
         #expect(C.preference == [C.upstream])
         #expect(C.upstream.file == "smart-turn-v3.2-cpu.onnx")
-        #expect(C.upstream.url.absoluteString == "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx")
-        #expect(C.upstream.sha256 == nil)
+        #expect(C.upstream.url.absoluteString == "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx")
+        #expect(C.upstream.sha256 == "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f")
+        #expect(C.upstream.bytes == 8_679_182)
+        // Not `main`: the bytes behind a branch can change under the hash.
+        #expect(!C.upstream.url.path.contains("/resolve/main/"))
+        // Nothing the app would download is unpinned.
+        #expect(C.preference.allSatisfy { $0.sha256?.count == 64 })
+    }
+
+    /// The right size and the wrong bytes is not the model. It used to be
+    /// "plausibly a model" and loaded.
+    @Test func aFileThatIsNotThePinnedOneIsRefused() {
+        let impostor = Data(repeating: 7, count: C.upstream.bytes)
+        #expect(!C.accepts(C.upstream, data: impostor))
+        let why = C.rejection(C.upstream, data: impostor)
+        #expect(why?.contains("is not the pinned 2bb026316b14") == true)
+        #expect(why?.contains(C.sha256Hex(impostor)) == true)
+        #expect(C.rejection(C.upstream, data: Data(repeating: 7, count: 1000)) == "1000 bytes is not a model")
+    }
+
+    // MARK: Retrying the load
+
+    /// A download that does not hash is refused and tried again later — and
+    /// the session is not left on the silence timer when the next one is good.
+    @Test func aHashMismatchIsRefusedAndRetried() async {
+        let good = Data(repeating: 3, count: 1_200_000)
+        let model = C.Model(name: "pinned", file: "pinned.onnx", url: URL(string: "https://example.invalid/pinned.onnx")!,
+                            sha256: C.sha256Hex(good), bytes: good.count)
+        var tampered = good; tampered[100] = 4
+        let server = Downloads([tampered, good])
+        let seen = Seen()
+        let attempts = await TurnModelRetry.run(
+            load: {
+                let data = await server.next()
+                if let why = C.rejection(model, data: data) { throw C.Refused(model: model.name, why: why) }
+                await seen.loaded(data)
+            },
+            sleep: { await seen.slept($0); return true },
+            onFailure: { failures, error, retryIn in
+                #expect(failures == 1)
+                #expect(error is C.Refused)
+                #expect(retryIn == 30)
+            })
+        #expect(attempts == 2)
+        #expect(await seen.waits == [30])
+        // The tampered file was never loaded; the good one was.
+        #expect(await seen.loads == [good])
+    }
+
+    /// Offline all afternoon: the waits grow, then hold at half an hour.
+    @Test func theWaitsGrowAndThenHold() async {
+        let seen = Seen()
+        let attempts = await TurnModelRetry.run(
+            load: { if await seen.waits.count < 6 { throw URLError(.notConnectedToInternet) } },
+            sleep: { await seen.slept($0); return true },
+            onFailure: { _, _, _ in })
+        #expect(attempts == 7)
+        #expect(await seen.waits == [30, 120, 600, 1800, 1800, 1800])
+        #expect(TurnModelRetry.delay(afterFailures: 0) == 30)
+        #expect(TurnModelRetry.delay(afterFailures: 99) == 1800)
+    }
+
+    /// A cancelled wait ends it without another attempt.
+    @Test func aCancelledWaitStops() async {
+        let seen = Seen()
+        let attempts = await TurnModelRetry.run(
+            load: { await seen.loaded(Data()); throw URLError(.timedOut) },
+            sleep: { _ in false },
+            onFailure: { _, _, _ in })
+        #expect(attempts == nil)
+        #expect(await seen.loads.count == 1)
+    }
+
+    actor Downloads {
+        private var bodies: [Data]
+        init(_ bodies: [Data]) { self.bodies = bodies }
+        func next() -> Data { bodies.removeFirst() }
+    }
+
+    actor Seen {
+        var waits: [Double] = []
+        var loads: [Data] = []
+        func slept(_ s: Double) { waits.append(s) }
+        func loaded(_ d: Data) { loads.append(d) }
     }
 
     /// A fresh Mac downloads the preferred model first and falls back in order.
@@ -43,12 +128,13 @@ struct TurnModelCatalogTests {
     }
 
     /// A pinned model is checked by hash, so a truncated or substituted file is
-    /// refused; v3.2 only has to be plausibly a model.
-    @Test func aPinnedModelIsCheckedByHashAndV32BySize() {
+    /// refused — v3.2 included; only a model named by path is taken on size.
+    @Test func aPinnedModelIsCheckedByHash() {
         let junk = Data(repeating: 7, count: 2_000_000)
         #expect(!C.accepts(candidate, data: junk))
-        #expect(C.accepts(C.upstream, data: junk))
+        #expect(!C.accepts(C.upstream, data: junk))
         #expect(!C.accepts(C.upstream, data: Data(repeating: 7, count: 1000)))
+        #expect(C.accepts(C.order(override: "/tmp/some-model.onnx")[0], data: junk))
         let pinned = C.Model(name: "x", file: "x.onnx", url: URL(string: "https://example.invalid/x")!,
                              sha256: C.sha256Hex(junk), bytes: junk.count)
         #expect(C.accepts(pinned, data: junk))

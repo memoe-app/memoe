@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MoeComponents
 
 /// Acoustic vocabulary boosting: your names and jargon, recovered from the
 /// audio rather than patched into the string afterwards.
@@ -230,6 +231,19 @@ actor VocabularyBoost {
         }
         if buildFailed { return nil }
 
+        // A turn never waits for a download. In a slim build the model may
+        // not be on this Mac yet; start fetching it and answer "no boost
+        // this time", exactly as for a build already in flight.
+        if !waitIfBuilding, !Self.modelOnDisk {
+            // Not on every utterance: offline, each attempt is a log line
+            // and a refused connection, and the answer will not change in
+            // the next ten seconds.
+            if let after = fetchRetryAfter, Date() < after { return nil }
+            fetchRetryAfter = Date().addingTimeInterval(Self.fetchRetryInterval)
+            Task { _ = await self.session(for: terms, waitIfBuilding: true) }
+            return nil
+        }
+
         let task = Task<VocabularyBoostingSession?, Never> {
             await Self.build(terms: terms)
         }
@@ -242,11 +256,24 @@ actor VocabularyBoost {
         if let built {
             session = built
             sessionTerms = terms
-        } else {
+        } else if Self.modelOnDisk {
             buildFailed = true
         }
+        // …and when the model is simply not here yet (a slim build, offline)
+        // nothing is latched: that is not a build that failed, it is a
+        // download that has not happened, and it is retried — rarely, see
+        // `fetchRetryAfter` — until it has.
         return built
     }
+
+    /// Whether the vocabulary model is on this Mac, bundled or fetched.
+    private static var modelOnDisk: Bool {
+        ComponentFetcher.presence(of: ComponentCatalog.vocabularyBoost,
+                                  in: ComponentCatalog.modelsRoot) == .present
+    }
+    /// How long a turn waits before asking for the model again.
+    static let fetchRetryInterval: TimeInterval = 600
+    private var fetchRetryAfter: Date?
 
     /// Download (first time) and load the CTC model, tokenise the terms, and
     /// assemble the session. Nil on any failure — logged, never thrown: the
@@ -254,8 +281,13 @@ actor VocabularyBoost {
     private static func build(terms: [String]) async -> VocabularyBoostingSession? {
         do {
             let started = Date()
-            let present = CtcModels.modelsExist(at: CtcModels.defaultCacheDirectory())
-            if !present { Log.write("dictation: downloading vocabulary model (~130 MB)…") }
+            // On disk first, by Memoe's own fetcher: a pinned commit, every
+            // file checked against its sha256, resumable. In a build that
+            // carries the model this returns at once. When it throws — the
+            // Mac is offline, the bytes were wrong — the catch below is the
+            // whole consequence; it must not reach FluidAudio's downloader,
+            // which pins nothing and checks nothing.
+            try await OnDemandModels.ensure(ComponentCatalog.vocabularyBoost)
             let models = try await CtcModels.downloadAndLoad()
             let tokenizer = try await CtcTokenizer.load(
                 from: CtcModels.defaultCacheDirectory())

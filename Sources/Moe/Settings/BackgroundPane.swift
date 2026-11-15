@@ -65,6 +65,8 @@ struct BackgroundPane: View {
     /// than drawing zeros that read as "nothing has ever happened".
     @State private var activity: [JobActivity.Job]?
     @State private var activityAsked = false
+    /// When each of Moe's own jobs last ran and last worked (`JobHealth`).
+    @State private var health: JobHealth.Snapshot?
 
     /// The Activity tab: one block per background job, in the words of
     /// what it did rather than the job's own name.
@@ -84,7 +86,9 @@ struct BackgroundPane: View {
                 ForEach(Array(activity.enumerated()), id: \.element.id) { i, j in
                     SettingRow(
                         title: j.title,
-                        detail: j.state + " " + occurrence(j),
+                        detail: [j.state, occurrence(j),
+                                 health?.jobs[j.name].flatMap { JobHealth.line($0) } ?? ""]
+                            .filter { !$0.isEmpty }.joined(separator: " "),
                         note: j.cost.basis == "none" ? nil
                             : "\(j.cost.tokens), \(j.cost.summary). \(j.cost.label)",
                         last: i == activity.count - 1
@@ -93,6 +97,12 @@ struct BackgroundPane: View {
                             .font(Theme.Typo.ui(12))
                             .foregroundStyle(j.isTrouble ? Theme.warn : Theme.ink3)
                     }
+                }
+                if let stale = health.flatMap({ JobHealth.staleLine($0) }) {
+                    Text(stale)
+                        .font(Theme.Typo.ui(12))
+                        .foregroundStyle(Theme.ink3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if activity.isEmpty {
                     Text("Nothing is scheduled yet.")
@@ -155,6 +165,7 @@ struct BackgroundPane: View {
     }
 
     @State private var moreOpen = false
+    @Environment(\.settingSpotlight) private var spotlight
 
     var body: some View {
         VStack(spacing: 0) {
@@ -185,6 +196,12 @@ struct BackgroundPane: View {
             }
         }
         .background(Theme.raised)
+        // Moe opened Settings on a row under "Keeping up" (or its More).
+        .onChange(of: spotlight, initial: true) { _, title in
+            guard let under = SettingSpotlight.under(title) else { return }
+            if under.hasPrefix("Keeping up") { tab = 2 }
+            if under.hasSuffix("More") { moreOpen = true }
+        }
         .onAppear { reload(full: true) }
         // The rows come from Hermes's own connection list. A person connects
         // Supabase in the Connections pane, comes back to this window — still
@@ -400,7 +417,8 @@ struct BackgroundPane: View {
         // for once per visit rather than on every switch flip.
         Task {
             let a = await ScriptRunner.offMain { JobActivity.all() }
-            await MainActor.run { activity = a; activityAsked = true }
+            let h = await ScriptRunner.offMain { JobHealth.read() }
+            await MainActor.run { activity = a; health = h; activityAsked = true }
         }
         Task {
             let s = await ScriptRunner.offMain { BackgroundLearning.state() }

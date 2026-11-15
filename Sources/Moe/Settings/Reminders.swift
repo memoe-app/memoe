@@ -572,7 +572,7 @@ enum Reminders {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes/reminders.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes/reminders.py")
+        if let c = Payload.checkoutPath("moe-home/hermes/reminders.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
@@ -582,7 +582,7 @@ enum Reminders {
     /// answers and only one of them is fine.
     private static func ask<T: Decodable>(_ args: [String], timeout: TimeInterval = 30) -> T? {
         guard let script = scriptPath() else { return nil }
-        // The Hermes venv's interpreter, not /usr/bin/python3:
+        // The Hermes venv's interpreter, never the system one:
         // configure-hermes.py needs PyYAML at import and refuses, loudly,
         // to be imported by anything that lacks it — and reminders.py
         // imports it to reach `register_job`.

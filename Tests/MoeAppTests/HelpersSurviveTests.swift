@@ -51,7 +51,7 @@ struct HelpersSurviveTests {
     /// was; the reminder still waits its turn on the island.
     @Test func aFinishedHelperIsNotStarvedByANudge() async throws {
         let (moe, brain) = try StallGuardConductorTests.make()
-        moe.queueReminder("Marketing brief, Tue 09-29")
+        moe.queueReminder("Marketing brief, Tue 09-29", origin: .init(moment: true))
         let result = try Self.writeResult("[ASYNC DELEGATION BATCH COMPLETE — deleg_t1] seven drafts written")
         let reminder = try Self.writeReminder("Water the plants \(UUID().uuidString.prefix(6))")
         defer {

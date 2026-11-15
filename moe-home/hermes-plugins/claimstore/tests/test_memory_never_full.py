@@ -51,9 +51,14 @@ def execute(capped, provider, hermes_home):
         result = memory_tool.memory_tool(action=args.get("action"), target=args.get("target", "memory"),
                                          content=args.get("content"), old_text=args.get("old_text"),
                                          store=store)
-        if json.loads(result).get("success"):
-            provider.on_memory_write(args["action"], args.get("target", "memory"),
-                                     args.get("content") or "",
+        data = json.loads(result)
+        if data.get("success"):
+            # A patch reaches providers as a replace of the whole entry, with the entry the store
+            # reports (MemoryManager.notify_memory_tool_write).
+            action, content = args["action"], args.get("content") or ""
+            if action == "patch":
+                action, content = "replace", data.get("patched_entry_after") or ""
+            provider.on_memory_write(action, args.get("target", "memory"), content,
                                      {"write_origin": "assistant_tool",
                                       "old_text": args.get("old_text") or ""})
         return result
@@ -128,14 +133,16 @@ def test_an_add_past_the_cap_is_saved_and_the_file_stays_under_it(provider, exec
     assert data["usage"].endswith(f"{len(raw):,}/{LIMIT:,} chars")
     # And the real tool keeps working on the file (no drift refusal).
     kept = entries[-2]
-    again = json.loads(execute({"action": "replace", "target": "memory", "old_text": kept[:12],
+    again = json.loads(execute({"action": "patch", "target": "memory", "old_text": kept[:12],
                                 "content": "Note: a shorter line."}))
     assert again["success"] is True, again
 
 
 def test_a_replace_past_the_cap_is_saved(provider, execute, monkeypatch):
+    """Since Hermes 0.21.7 the tool offers `patch`, not `replace`; a whole-entry rewrite is a
+    patch whose old_text is the whole entry."""
     notes = fill_to_99_percent(execute)
-    args = {"action": "replace", "target": "memory", "old_text": "Note 03", "content": NEW}
+    args = {"action": "patch", "target": "memory", "old_text": notes[3], "content": NEW}
 
     data = json.loads(through_hermes(execute, args, monkeypatch))
 
@@ -146,9 +153,24 @@ def test_a_replace_past_the_cap_is_saved(provider, execute, monkeypatch):
     assert len(raw) <= LIMIT and NEW in parse_entries(raw)
 
 
+def test_a_span_patch_past_the_cap_saves_the_patched_entry(provider, execute, monkeypatch):
+    """A patch edits one span and keeps the rest of the entry: what is saved past the cap is the
+    entry as the tool would have written it, and the old entry is retracted."""
+    notes = fill_to_99_percent(execute)
+    patched = notes[5].replace("Note 05 about", NEW, 1)
+    args = {"action": "patch", "target": "memory", "old_text": "Note 05 about", "content": NEW}
+
+    data = json.loads(through_hermes(execute, args, monkeypatch))
+
+    assert data["success"] is True and data["message"].startswith("Entry patched."), data
+    assert claim_id("memory", patched) in live(provider)
+    assert claim_id("memory", notes[5]) not in live(provider)
+    assert claim_id("memory", NEW) not in live(provider)
+
+
 def test_a_refusal_that_is_not_about_room_is_left_alone(provider, execute, monkeypatch):
     fill_to_99_percent(execute)
-    args = {"action": "replace", "target": "memory", "old_text": "no such entry", "content": NEW}
+    args = {"action": "patch", "target": "memory", "old_text": "no such entry", "content": NEW}
 
     data = json.loads(through_hermes(execute, args, monkeypatch))
 
@@ -298,7 +320,7 @@ def test_a_refusal_in_another_session_is_never_written_by_the_chats_provider(
 
 def test_a_replace_is_saved_whole(provider, execute, monkeypatch):
     notes = fill_to_99_percent(execute)
-    args = {"action": "replace", "target": "memory", "old_text": "Note 04", "content": NEW}
+    args = {"action": "patch", "target": "memory", "old_text": notes[4], "content": NEW}
 
     data = json.loads(through_hermes(execute, args, monkeypatch))
 
@@ -318,11 +340,11 @@ def test_a_replace_that_is_refused_retracts_nothing(provider, execute, monkeypat
     assert claim_id("memory", NEW) not in live(provider)
     notes = fill_to_99_percent(execute)
     before = ledger(provider)
-    args = {"action": "replace", "target": "memory", "old_text": "Note 03", "content": NEW}
+    args = {"action": "patch", "target": "memory", "old_text": notes[3], "content": NEW}
 
     data = json.loads(through_hermes(execute, args, monkeypatch))
 
-    assert data["success"] is False and "Replacement would put memory at" in data["error"]
+    assert data["success"] is False and "Patch would put memory at" in data["error"]
     assert claim_id("memory", notes[3]) in live(provider)
     assert ledger(provider) == before
     assert notes[3] in parse_entries(memory_path("memory").read_text(encoding="utf-8"))

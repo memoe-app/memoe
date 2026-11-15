@@ -49,7 +49,7 @@ status)
        osascript -e 'tell application "Notes" to return count of notes' >/dev/null 2>&1; then
     echo "ok: reading Apple Notes"
   else
-    echo "needs-setup: allow Moe to control Notes (System Settings › Privacy & Security › Automation)"
+    echo "needs-setup: allow Memoe to control Notes (System Settings › Privacy & Security › Automation)"
     exit 1
   fi
   ;;
@@ -166,7 +166,7 @@ except subprocess.TimeoutExpired:
 if done.returncode != 0:
     err = (done.stderr or "").strip()
     if "-1743" in err or "not allowed" in err.lower() or "not authorized" in err.lower():
-        print("needs-setup: allow Moe to control Notes (System Settings > Privacy & Security > Automation)")
+        print("needs-setup: allow Memoe to control Notes (System Settings > Privacy & Security > Automation)")
         sys.exit(1)
     sys.stderr.write("create: Notes refused: " + (err or "no reason given") + "\n"); sys.exit(1)
 print("created: " + title)

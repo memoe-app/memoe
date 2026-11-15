@@ -34,6 +34,14 @@ CACHE="$HOME/.cache/fluidaudio/Models"
 APP_SUPPORT_MODELS="parakeet-eou-streaming parakeet-tdt-0.6b-v3 parakeet-ctc-110m-coreml speaker-diarization silero-vad campplus"
 CACHE_MODELS="kokoro-82m-coreml kokoro"
 
+# The models a slim build leaves out of the box and fetches the first time
+# they are needed (docs/SLIM-DOWNLOAD.md). Still staged here, always: a full
+# build carries them, and scripts/make-component-manifest.py reads their
+# hashes from this staging to pin what a slim build will download. Every name
+# must also be in one of the two lists above. build.sh only acts on this when
+# MOE_ON_DEMAND_COMPONENTS=on; the default bundles everything, as before.
+ON_DEMAND_MODELS="parakeet-ctc-110m-coreml speaker-diarization"
+
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 

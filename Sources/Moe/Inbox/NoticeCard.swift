@@ -91,6 +91,8 @@ struct NoticeCardView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Close. It stays in your inbox.")
+                .accessibilityLabel("Close")
+                .accessibilityHint("It stays in your inbox")
             }
         }
         .padding(.horizontal, 20)
@@ -191,6 +193,8 @@ struct NoticeCardView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(item)
+                    .accessibilityValue(ticked.contains(item) ? "Ticked" : "Not ticked")
                 }
             }
         case .draft(let d):
@@ -224,6 +228,9 @@ struct NoticeCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.paper))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.rule, lineWidth: 1))
+        // The draft and its Copy as one stop: "Draft, <the words>", with
+        // Copy as its action.
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: Ready work: an offer's prepared draft
@@ -280,6 +287,7 @@ struct NoticeCardView: View {
                         .textFieldStyle(.plain)
                         .font(Theme.Typo.ui(13.5))
                         .onSubmit { continueInIsland(n) }
+                        .accessibilityLabel(askPlaceholder(n))
                 }
                 Button { continueInIsland(n) } label: {
                     Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
@@ -291,6 +299,7 @@ struct NoticeCardView: View {
                 .buttonStyle(.plain)
                 .disabled(ask.trimmingCharacters(in: .whitespaces).isEmpty)
                 .help("Ask Moe about this, in a conversation of its own")
+                .accessibilityLabel("Ask Moe about this")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -319,7 +328,12 @@ struct NoticeCardView: View {
 
     @ViewBuilder
     private func primaryActions(_ n: InboxItem) -> some View {
-        if !n.offer.isEmpty {
+        if !n.buy.isEmpty {
+            PaperButton("Not now", style: .quiet) { conductor.finishNotice(n.id, outcome: "Not now"); onClose() }
+            PaperButton(n.buyTitle.isEmpty ? "Add a pack" : n.buyTitle, style: .primary) {
+                conductor.buyNoticePack(n.id); onClose()
+            }
+        } else if !n.offer.isEmpty {
             PaperButton("Not this kind", style: .quiet) { conductor.declineNotice(n.id, kind: true); onClose() }
                 .help("Moe stops offering this kind of thing")
             PaperButton("Not now", style: .quiet) { conductor.declineNotice(n.id, kind: false); onClose() }
@@ -376,7 +390,10 @@ struct PaperButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                if let icon { Image(systemName: icon).font(.system(size: 9.5, weight: .bold)) }
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 9.5, weight: .bold))
+                        .accessibilityHidden(true)
+                }
                 Text(title).font(Theme.Typo.ui(12.5, weight: style == .primary ? .semibold : .regular))
             }
             .lineLimit(1)

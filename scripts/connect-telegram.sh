@@ -36,7 +36,9 @@
 #
 # Redirection for tests: MOE_HOME; MOE_TELEGRAM_PYTHON = an interpreter that
 # already has telethon (a fake one on PYTHONPATH), skipping the venv and the
-# pip install. Bash 3.2 and `set -u` clean.
+# pip install; HERMES_HOME = where the seed's tool store (and its uv) lives; MOE_TELEGRAM_PIP_PYTHON =
+# the interpreter whose pip is the last resort (default: the venv's base).
+# Bash 3.2 and `set -u` clean.
 set -euo pipefail
 umask 077
 
@@ -292,14 +294,65 @@ os.chmod(path, 0o600)
 print("✓ credentials saved")
 PY
 
+# ── the private environment telethon lives in ─────────────────────────────
+#
+# Never ask Python for pip. The interpreter here is Hermes's, and the seed
+# ships it without ensurepip (slim-hermes-tools.py did from 0.3.22 until
+# 2026-11-13, and those Pythons stay on Macs until Hermes's Python changes),
+# so a plain `python3 -m venv` died in ensurepip and every sign-in showed
+# "…'-m', 'ensurepip', '--upgrade', '--default-pip']' returned non-zero exit
+# status 1". The venv is made --without-pip, which needs nothing but the
+# stdlib, and telethon goes in with the seed's own uv (how Hermes builds its
+# venvs too), found through the store's facts.json. uv cannot reach the
+# package index on every Mac where pip can, so a refusal falls back to pip:
+# the venv's own if it has one, else the base interpreter's driving the venv
+# (`pip --python`).
+#
+# A venv that never finished — ensurepip died after bin/python3 was made, so
+# it looks usable and holds no pip and no activate scripts — or whose Python
+# has gone (Hermes moved to a new one) is made again, not reused. venv writes
+# bin/activate as its last step, so it is the "this finished" mark.
+seed_uv() {
+  local store="${HERMES_HOME:-$HOME/.hermes}/tools" entry
+  [ -f "$store/facts.json" ] || return 1
+  entry="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["packages"]["uv"]["entry"])' \
+    "$store/facts.json" 2>/dev/null)" || return 1
+  case "$entry" in ''|*/*|.*) return 1 ;; esac
+  [ -x "$store/$entry/uv" ] || return 1
+  printf '%s\n' "$store/$entry/uv"
+}
+
+venv_finished() {
+  [ -f "$VENV/pyvenv.cfg" ] && [ -f "$VENV/bin/activate" ] \
+    && "$VENV/bin/python3" -c 'import sys' >/dev/null 2>&1
+}
+
+install_telethon() {
+  local uv base
+  uv="$(seed_uv || true)"
+  if [ -n "$uv" ]; then
+    "$uv" pip install --quiet --no-config --python "$VENV/bin/python3" --upgrade telethon >&2 && return 0
+    echo "› uv could not install it; trying pip…"
+  fi
+  if "$VENV/bin/python3" -m pip --version >/dev/null 2>&1; then
+    "$VENV/bin/python3" -m pip install --quiet --disable-pip-version-check --upgrade telethon >&2 && return 0
+  fi
+  base="${MOE_TELEGRAM_PIP_PYTHON:-$("$VENV/bin/python3" -c 'import sys; print(sys._base_executable)' 2>/dev/null || true)}"
+  [ -n "$base" ] && "$base" -m pip --python "$VENV/bin/python3" install --quiet \
+    --disable-pip-version-check --upgrade telethon >&2
+}
+
 PY="${MOE_TELEGRAM_PYTHON:-}"
 if [ -z "$PY" ]; then
-  if [ ! -x "$VENV/bin/python3" ]; then
+  if ! venv_finished; then
     echo "› creating a private python environment…"
-    python3 -m venv "$VENV"
+    rm -rf "$VENV"
+    python3 -m venv --without-pip "$VENV" >&2 \
+      || { echo "✗ Moe could not set up the private Python it uses for Telegram."; exit 1; }
   fi
   echo "› installing telethon…"
-  "$VENV/bin/python3" -m pip install --quiet --upgrade pip telethon
+  install_telethon \
+    || { echo "✗ Moe could not download the piece it needs to read Telegram. Check your internet connection and try again."; exit 1; }
   PY="$VENV/bin/python3"
 fi
 

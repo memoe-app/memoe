@@ -138,6 +138,15 @@ public enum Dropdown {
         true
     }
 
+    /// The row of controls under the conversation. The ⋯ lives beside the
+    /// send button now, and Stop is the send button itself while Moe works
+    /// (the owner, 2026-11-13), so the row that used to hold a lone ⋯ on
+    /// every card is drawn only while the controls are slid out — or while
+    /// muted, because the red Unmute pill lives on it and must stay in view.
+    public static func showsControlsRow(hasControls: Bool, open: Bool, muted: Bool) -> Bool {
+        hasControls && (open || muted)
+    }
+
     public struct Contents: Equatable, Sendable {
         /// The conversation (`IslandChat`), scrolling past its cap.
         public var chat: [IslandChat.Row]
@@ -200,6 +209,15 @@ public enum Dropdown {
 
     public static let minimumHeight = 64.0
     public static let maximumHeight = ConversationPanel.maximumHeight
+    /// Clicked open, the panel may grow past the hover panel's 420 so a long
+    /// answer can be read whole (the owner, 2026-10-30: "it doesn't actually
+    /// expand more. I can't see the whole thing"). Hover stays at 420.
+    public static let expandedMaximumHeight = 620.0
+
+    /// The ceiling for a presentation: the hover panel's, or the open one's.
+    public static func maximum(expanded: Bool) -> Double {
+        expanded ? expandedMaximumHeight : maximumHeight
+    }
 
     /// Moe's line: its wrapped lines, up to `moeLinesMax`, past which it
     /// scrolls. The view frames it at exactly this.
@@ -229,8 +247,9 @@ public enum Dropdown {
     }
 
     public static func height(_ c: Contents,
-                              wraps: ConversationPanel.Wraps = ConversationPanel.estimate) -> Double {
-        layout(c, wraps: wraps).height
+                              wraps: ConversationPanel.Wraps = ConversationPanel.estimate,
+                              maximum: Double = maximumHeight) -> Double {
+        layout(c, wraps: wraps, maximum: maximum).height
     }
 
     /// The least of the conversation kept in view when a reminder, a fix and
@@ -247,21 +266,24 @@ public enum Dropdown {
     /// under the notch, the field below the panel's edge (the owner,
     /// 2026-09-25, with a screenshot).
     public static func layout(_ c: Contents,
-                              wraps: ConversationPanel.Wraps = ConversationPanel.estimate)
+                              wraps: ConversationPanel.Wraps = ConversationPanel.estimate,
+                              maximum: Double = maximumHeight)
         -> (height: Double, chat: Double) {
         var fixed: [Double] = []
         if !c.statusInBand { fixed.append(Metric.statusRow) }
         if c.banners > 0 { fixed.append(c.banners) }
         if c.controls { fixed.append(Metric.controls) }
         if c.field { fixed.append(Metric.field + max(c.fieldText - Metric.fieldLine, 0)) }
-        let natural: Double = !c.chat.isEmpty ? IslandChat.height(c.chat, wraps: wraps)
+        // The conversation's own cap grows by whatever the panel's does.
+        let chatCap = IslandChat.maxHeight + max(maximum - maximumHeight, 0)
+        let natural: Double = !c.chat.isEmpty ? IslandChat.height(c.chat, wraps: wraps, cap: chatCap)
             : (!c.greeting.isEmpty ? moeHeight(c.greeting, wraps: wraps) : 0)
         let rowCount = fixed.count + (natural > 0 ? 1 : 0)
         let chrome = Metric.top + Metric.bottom + Double(max(rowCount - 1, 0)) * Metric.gap
-        let room = maximumHeight - chrome - fixed.reduce(0, +)
+        let room = maximum - chrome - fixed.reduce(0, +)
         let chat = natural > 0 ? min(natural, max(room, minimumChat)) : 0
         let total = chrome + fixed.reduce(0, +) + chat
-        return (min(max(total, minimumHeight), maximumHeight), chat)
+        return (min(max(total, minimumHeight), maximum), chat)
     }
 }
 
@@ -325,10 +347,19 @@ public enum IslandChat {
         case working(label: String)
         /// "Noted · Undo" lines under an answer.
         case noted(id: String, count: Int)
+        /// What Moe did for an answer, folded to one line under it ("3 steps
+        /// · 48 s · 1 source ›"); `lines` are the steps and sources while it
+        /// is opened, empty while folded (the owner, 2026-11-13: a live line
+        /// while working, then folded, on both surfaces).
+        case steps(id: String, summary: String, lines: [String])
+        /// Send · Edit · Copy, Yes or Retry under the newest turn
+        /// (`ReplyActions`), one row of small buttons.
+        case actions(id: String, labels: [String])
 
         public var id: String {
             switch self {
-            case .you(let id, _, _), .moe(let id, _), .system(let id, _), .noted(let id, _): return id
+            case .you(let id, _, _), .moe(let id, _), .system(let id, _), .noted(let id, _),
+                 .steps(let id, _, _), .actions(let id, _): return id
             case .working: return "working"
             case .queued: return "queued"
             }
@@ -360,6 +391,13 @@ public enum IslandChat {
     /// The "More" under a clipped message.
     public static let more = 18.0
     public static let notedLine = 16.0
+    /// The folded steps line under an answer, and each step once opened.
+    public static let stepsLine = 18.0
+    /// The row of action buttons: 24-pt targets.
+    public static let actionsLine = 24.0
+    public static let stepLine = 16.0
+    /// Under the steps line, above the opened list.
+    public static let stepsGap = 4.0
     /// Past this the conversation scrolls, pinned to its newest row.
     public static let maxHeight = 290.0
 
@@ -381,15 +419,7 @@ public enum IslandChat {
             return Double(lines) * Dropdown.Metric.youLineHeight + Dropdown.Metric.youPadV * 2
                 + (clipped(text, limit: youLimit) == nil ? 0 : more)
         case .moe(_, let text):
-            // Block by block, as it is drawn: a quote (a draft Moe wrote) is
-            // a card with `boxPad` inside it.
-            let blocks = ReplyBlocks.plain(ReplyBlocks.parse(text))
-            guard !blocks.isEmpty else { return moeLine }
-            let body = blocks.map { b -> Double in
-                let w = b.boxed ? width - boxPad * 2 : width
-                return Double(max(wraps(b.text, w, moeSize), 1)) * moeLine + (b.boxed ? boxPad * 2 : 0)
-            }.reduce(0, +)
-            return body + Double(blocks.count - 1) * blockGap
+            return answerHeight(text, width: width, wraps: wraps)
         case .system(_, let text):
             return Double(max(wraps(text, width, systemSize), 1)) * systemLine
         case .working:
@@ -399,14 +429,85 @@ public enum IslandChat {
             return Double(lines) * Dropdown.Metric.youLineHeight + Dropdown.Metric.youPadV * 2 + more
         case .noted(_, let count):
             return Double(count) * notedLine
+        case .steps(_, _, let lines):
+            return stepsLine + (lines.isEmpty ? 0 : stepsGap + Double(lines.count) * stepLine)
+        case .actions:
+            return actionsLine
+        }
+    }
+
+    // The blocks of an answer, as `IslandView.islandBlock` draws them.
+    /// Between the paragraphs (lines) of one block of prose.
+    public static let paragraphGap = 4.0
+    /// Between the items of a list.
+    public static let listGap = 3.0
+    /// A list item's text starts this far in from its marker's left edge,
+    /// plus `listIndent` per level.
+    public static let listMarker = 18.0
+    public static let listIndent = 16.0
+    /// Code: monospaced, under a header with its language and Copy.
+    public static let codeSize = 12.5
+    public static let codeLine = 17.0
+    public static let codeHeader = 20.0
+    /// A monospaced line is wider than the system font's at the same size;
+    /// measured as if the font were this much larger, erring wide.
+    public static let monoWidth = 1.2
+    /// Tables of up to this many columns are drawn on the card; wider ones
+    /// fold to one line that opens the window.
+    public static let tableColumnsOnCard = 3
+    public static let tableSize = 12.5
+    public static let tableLine = 17.0
+    public static let tableRowPad = 6.0
+
+    /// One answer's height, block by block, at `width`.
+    public static func answerHeight(_ text: String, width: Double,
+                                    wraps: ConversationPanel.Wraps = ConversationPanel.estimate) -> Double {
+        let blocks = ReplyBlocks.parse(text)
+        guard !blocks.isEmpty else { return moeLine }
+        let body = blocks.map { blockHeight($0, width: width, wraps: wraps) }.reduce(0, +)
+        return body + Double(blocks.count - 1) * blockGap
+    }
+
+    public static func blockHeight(_ block: ReplyBlock, width: Double,
+                                   wraps: ConversationPanel.Wraps = ConversationPanel.estimate) -> Double {
+        func lines(_ s: String, _ w: Double, _ size: Double) -> Double { Double(max(wraps(s, w, size), 1)) }
+        switch block {
+        case .prose(let s):
+            let paragraphs = ReplyBlock.paragraphs(s)
+            return paragraphs.map { lines($0, width, moeSize) * moeLine }.reduce(0, +)
+                + Double(max(paragraphs.count - 1, 0)) * paragraphGap
+        case .heading(let s):
+            return lines(s, width, moeSize) * moeLine
+        case .quote(let s):
+            return lines(s, width - boxPad * 2, moeSize) * moeLine + boxPad * 2
+        case .code(let s, _):
+            let body = s.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { lines(String($0).isEmpty ? " " : String($0), width - boxPad * 2, codeSize * monoWidth) }
+                .reduce(0, +)
+            return codeHeader + body * codeLine + boxPad * 2
+        case .list(let items):
+            return items.map { item in
+                lines(item.text, width - listMarker - Double(item.level) * listIndent, moeSize) * moeLine
+            }.reduce(0, +) + Double(max(items.count - 1, 0)) * listGap
+        case .table(let t):
+            guard t.columns <= tableColumnsOnCard, t.columns > 0 else { return moeLine }
+            let column = (width - boxPad * 2) / Double(t.columns)
+            let all = [t.header] + t.rows
+            let rows = all.map { row in
+                (0..<t.columns).map { c in
+                    lines(row.indices.contains(c) ? row[c] : " ", column - 8, tableSize)
+                }.max() ?? 1
+            }
+            return rows.map { $0 * tableLine + tableRowPad }.reduce(0, +) + boxPad
         }
     }
 
     /// The conversation's drawn height: every row and the gaps between,
-    /// up to `maxHeight`, past which it scrolls.
-    public static func height(_ rows: [Row], wraps: ConversationPanel.Wraps = ConversationPanel.estimate) -> Double {
+    /// up to `cap` (`maxHeight` on hover), past which it scrolls.
+    public static func height(_ rows: [Row], wraps: ConversationPanel.Wraps = ConversationPanel.estimate,
+                              cap: Double = maxHeight) -> Double {
         guard !rows.isEmpty else { return 0 }
         let total = rows.map { height($0, wraps: wraps) }.reduce(0, +) + Double(rows.count - 1) * gap
-        return min(total, maxHeight)
+        return min(total, cap)
     }
 }

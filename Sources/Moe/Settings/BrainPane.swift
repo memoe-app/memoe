@@ -911,6 +911,7 @@ struct BrainAccountSheet: View {
                     Spacer(minLength: Theme.Space.small)
                     Image(systemName: on ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(on ? Theme.accent : Theme.ruleStrong)
+                        .accessibilityLabel(on ? "Selected" : "Not selected")
                 }
                 .contentShape(Rectangle())
             }
@@ -992,6 +993,7 @@ struct BrainAccountSheet: View {
                         if !testResult.isEmpty {
                             Image(systemName: testFailed ? "xmark.circle.fill" : "checkmark.circle.fill")
                                 .foregroundStyle(testFailed ? Theme.warn : Theme.good)
+                                .accessibilityLabel(testFailed ? "Failed" : "Worked")
                             Text(testResult)
                                 .font(Theme.Typo.ui(11))
                                 .foregroundStyle(testFailed ? Theme.warn : Theme.ink3)

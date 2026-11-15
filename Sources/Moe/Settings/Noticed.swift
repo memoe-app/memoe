@@ -365,6 +365,7 @@ struct NoticedTab: View {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.ink3)
+                        .accessibilityLabel(expanded ? "Expanded" : "Collapsed")
                 }
                 .contentShape(Rectangle())
             }

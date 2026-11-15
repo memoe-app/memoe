@@ -39,10 +39,18 @@ and need nothing here.
 - A toolset listed there still needs its runtime `check_fn` to pass:
   `web` needs a search backend (Exa/Firecrawl/Tavily/Brave key, or the
   keyless `ddgs` package), `image_gen` needs `FAL_KEY` or the Nous gateway,
-  `homeassistant` needs `HASS_TOKEN`, `spotify` needs `hermes auth spotify`,
   `computer_use` needs the cua-driver binary, `browser` needs
   `agent-browser` on PATH (or `BROWSER_CDP_URL`). Listing a toolset whose
   check fails is harmless — it is skipped — so list them all.
+- `homeassistant` and `spotify` left Hermes core for catalog plugins, and are
+  **not** on the lists below unless the plugin is installed in
+  `$HERMES_HOME/plugins/`. Hermes reads either name in any
+  `platform_toolsets` row as "this home uses it" and tries to fetch the plugin
+  at every start; with lazy installs off that is a refusal notice every start.
+  `configure-hermes.py` lists the name while the plugin directory exists and
+  removes it from every row when it does not. `spotify` has to be listed once
+  installed — it is a default-off toolset, on only where a saved list names
+  it. `scripts/connect.sh spotify` installs the plugin on the first sign-in.
 - `kanban` is never enabled by `all`/`*` and needs explicit listing; its
   tools are only exposed to dispatcher-owned workers anyway.
 - `tts` is n/a: Moe owns audio on the Mac.
@@ -77,8 +85,6 @@ platform_toolsets:
     - todo
     - clarify
     - computer_use
-    - homeassistant
-    - spotify
     - kanban
     - x_search
   # The chat platforms Moe turns on get the same set, so "Moe over Telegram"
@@ -87,8 +93,6 @@ platform_toolsets:
     - hermes-telegram
     - clarify
     - computer_use
-    - homeassistant
-    - spotify
     - kanban
 
 tools:

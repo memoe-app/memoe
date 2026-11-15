@@ -63,6 +63,10 @@ enum FirstRun {
         // a symlink from FluidAudio's cache into the bundle, so first run
         // needs no download and works offline. Models.swift says why links.
         Models.linkIfNeeded()
+        // …and the few a slim build fetches instead of carrying. Nothing at
+        // all in a build that carries everything, which is every build today
+        // (OnDemandModels.swift, docs/SLIM-DOWNLOAD.md).
+        OnDemandModels.afterLinking()
 
         // The two background jobs the rest of the product assumes are
         // running. Only ever once — see startBackgroundJobsOnce.

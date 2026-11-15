@@ -191,7 +191,12 @@ public enum ConfirmLifecycle {
         if let moe = environment["MOE_HOME"], !moe.isEmpty {
             return URL(fileURLWithPath: moe, isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".moe", isDirectory: true)
+        // ~/Library/Application Support/Moe, matching Config.homeDir — the
+        // real directory, not the legacy link to it. Built here for the same
+        // reason Vocabulary.swift builds it: this module sits below Moe and
+        // cannot see its constant. scripts/test-moe-home.sh keeps them in step.
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Moe", isDirectory: true)
     }
 
     /// Where the note goes: the Moe home's `inbox/`, which the app polls
@@ -199,7 +204,7 @@ public enum ConfirmLifecycle {
     /// person hears about it even when no conversation was waiting on the
     /// card. `home` is the directory `confirm.sh` lives under, and is only
     /// believed when it IS a Moe home (it holds `tools/confirm.sh`);
-    /// otherwise `$MOE_HOME`, otherwise `~/.moe`.
+    /// otherwise `$MOE_HOME`, otherwise `~/Library/Application Support/Moe`.
     public static func inbox(home: String, environment: [String: String]) -> URL {
         Self.home(home, environment: environment).appendingPathComponent("inbox", isDirectory: true)
     }

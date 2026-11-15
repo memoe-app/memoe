@@ -177,7 +177,12 @@ struct StallGuardConductorTests {
 
 /// A brain that answers when told to.
 final class FakeBrain: BrainProvider, @unchecked Sendable {
-    struct Sent: Equatable { let text: String; let silent: Bool; var starter: TurnStarter = .person }
+    struct Sent: Equatable {
+        let text: String; let silent: Bool; var starter: TurnStarter = .person
+        /// Sent as the person's own spoken turn (`BrainProvider.send(spoken:)`).
+        var spoken = false
+        var logAs: String? = nil
+    }
     var onEvent: ((BrainEvent) -> Void)?
     private(set) var sent: [Sent] = []
 
@@ -185,16 +190,33 @@ final class FakeBrain: BrainProvider, @unchecked Sendable {
     func warmUp() {}
     func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
               starter: TurnStarter) {
-        sent.append(Sent(text: text, silent: silent, starter: starter))
+        send(text, images: images, silent: silent, logAs: logAs, starter: starter, spoken: false)
+    }
+    func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
+              starter: TurnStarter, spoken: Bool) {
+        sent.append(Sent(text: text, silent: silent, starter: starter, spoken: spoken, logAs: logAs))
     }
     func reset(warmingUp: Bool) {}
     func stop() {}
+
+    /// The session a turn lands in. Empty by default — a brain with no
+    /// session to name — and set by a test that rotates it.
+    var sessionID = ""
+    var currentSessionID: String { sessionID }
 
     /// Every resume the Conductor asked for — which thread, which session.
     private(set) var resumed: [BrainResume] = []
     func resume(_ resume: BrainResume) { resumed.append(resume) }
 
     func emit(_ event: BrainEvent) { onEvent?(event) }
+
+    /// Every selection the Conductor handed over (`apply(brain:)`).
+    private(set) var applied: [BrainSelection] = []
+    func apply(brain: BrainSelection) { applied.append(brain) }
+
+    /// Every "may this chat be remembered" the Conductor handed over.
+    private(set) var remembers: [Bool] = []
+    func remember(_ remembers: Bool) { self.remembers.append(remembers) }
 
     /// A reply streamed and finished, the way HermesBrain reports one.
     func reply(_ text: String, end: TurnEnd) {

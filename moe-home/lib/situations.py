@@ -1156,10 +1156,16 @@ def _size(data: Dict[str, Any]) -> int:
     return len(json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True).encode("utf-8"))
 
 
-def set_prepared(sid: str, prepared: Dict[str, Any]) -> bool:
+def set_prepared(sid: str, prepared: Dict[str, Any], now: Optional[float] = None) -> bool:
     """Attach what the preparer made (lib/prepare.py) to a situation, without
     touching `updated_at`: preparing is not the situation changing, and the
-    preparer uses `updated_at` to know whether it has prepared this version."""
+    preparer uses `updated_at` to know whether it has prepared this version.
+
+    `now` is the tick's clock, and the prune on the way out uses it. It used
+    to prune by the wall clock whatever clock the tick was given, so one pass
+    held two opinions of what day it was: `upsert` kept a record by the
+    tick's clock and this dropped it by the machine's (2026-11-12 — every
+    test that pins a clock went red 45 days after the date it pinned)."""
     path = situations_path()
     with _locked(path):
         data = load_situations()
@@ -1168,7 +1174,7 @@ def set_prepared(sid: str, prepared: Dict[str, Any]) -> bool:
         data[sid]["prepared"] = prepared
         if data[sid].get("status") == "sensed":
             data[sid]["status"] = "prepared"
-        _write_json(path, prune(data))
+        _write_json(path, prune(data, now))
     return True
 
 
@@ -1782,7 +1788,9 @@ def set_offered(sid: str, prepared_for: str, now: float) -> bool:
         data[sid]["offered"] = {"for": prepared_for, "at": _iso(now)}
         if data[sid].get("status") in ("sensed", "prepared"):
             data[sid]["status"] = "offered"
-        _write_json(path, prune(data))
+        # By the clock the offer is stamped with, not the wall clock: see
+        # `set_prepared`.
+        _write_json(path, prune(data, now))
     return True
 
 
@@ -1820,7 +1828,7 @@ def _offer_pass(offerer, summary: Dict[str, Any], now: float) -> None:
     P = promises_mod()
     for sid, sit in load_situations().items():
         if isinstance(sit, dict) and P.wants_plain(sit, should, now):
-            set_prepared(sid, P.plain_prepared(sit, now, "mac" if on_mac() else "cloud"))
+            set_prepared(sid, P.plain_prepared(sit, now, "mac" if on_mac() else "cloud"), now)
     candidates = []
     everything = _learned(load_situations(), now)
     # One offer per conversation per day (owner, 2026-09-30: two offers
@@ -1914,7 +1922,7 @@ def _prepare_pass(preparer, summary: Dict[str, Any], now: float) -> None:
             summary["errors"] += 1 if why not in ("nothing usable prepared",) else 0
             monitor({"event": "prepare-failed", "id": sid, "why": why, "took": took}, now)
             continue
-        set_prepared(sid, made)
+        set_prepared(sid, made, now)
         summary["prepared"] += 1
         monitor({"event": "prepared", "id": sid, "research": len(made.get("research") or []),
                  "options": len(made.get("options") or []), "draft": bool(made.get("draft")),

@@ -53,6 +53,14 @@ class DigestTest(unittest.TestCase):
         self.j = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.j)
         self.j._profile_module = lambda: None
+        # "The store cannot be opened here", said rather than left to chance.
+        # HERMES_HOME above has no plugins, and alone that made the job's
+        # `from claimstore import cli` fail. Run after the moe-ledger suite in
+        # one process — which is how scripts/test-brain-mutants.py runs its
+        # baseline — `claimstore` is already imported, the job opened an empty
+        # store, every noted row was "forgotten", and six tests here failed on
+        # a note that was never sent. The one test about forgetting sets its own.
+        self.j.live_claim_ids = lambda: None
         self.d = Deliver()
 
     def tearDown(self):

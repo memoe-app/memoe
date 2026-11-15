@@ -70,8 +70,9 @@ bsdiff/bspatch © 2003-2005 Colin Percival, BSD-2-Clause; sais-lite
 Peters, zlib; SUSignatureVerifier.m © 2011 Mark Hamlin, BSD-2-Clause. The
 full text of all of these is in THIRD_PARTY_LICENSES/Sparkle-MIT.txt.
 
-Dictation prompts — the dictation cleanup and dictionary prompts are adapted
-from OpenWhispr © 2024 OpenWhispr Team, MIT. No OpenWhispr code is linked.
+Transcript cleanup prompts — the transcript cleanup and dictionary prompts are
+adapted from OpenWhispr © 2024 OpenWhispr Team, MIT. No OpenWhispr code is
+linked.
 
 Kokoro-82M training data includes material from Koniwa (CC BY 3.0) and SIWIS
 (CC BY 4.0).

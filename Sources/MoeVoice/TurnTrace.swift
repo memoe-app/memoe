@@ -77,6 +77,12 @@ public struct TurnTrace: Codable, Equatable, Sendable {
     /// who said it ("rules" or "model"). Never the words.
     public var semantic: String?
     public var semanticSource: String?
+    /// Which brain answered (`BrainProviderKind.rawValue`: claude-code-cli,
+    /// openai-codex, anthropic, …) and on which model, so the routes can be
+    /// timed apart. Until 2026-10-30 every row was the owner's Claude plan
+    /// and nothing said so; the ChatGPT plan and key routes had no numbers.
+    public var brain: String?
+    public var model: String?
 
     public init(source: String, startedAt: Date = Date()) {
         self.source = source

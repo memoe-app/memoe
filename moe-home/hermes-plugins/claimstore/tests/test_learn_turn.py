@@ -779,3 +779,34 @@ def test_a_reread_on_another_thread_never_hides_a_claim_just_written(ledger_dir)
     reader.join(5)
     writer.join(5)
     assert "The person's sister Rivka lives in Denver." in store.live("user")
+
+
+def _not_remembered():
+    """X-Hermes-No-Memory as the gateway binds it: Memoe's "Don't remember this chat"."""
+    from gateway.session_context import set_turn_no_memory, reset_turn_no_memory
+
+    class Scope:
+        def __enter__(self):
+            self.token = set_turn_no_memory(True)
+
+        def __exit__(self, *exc):
+            reset_turn_no_memory(self.token)
+    return Scope()
+
+
+def test_a_chat_not_to_be_remembered_teaches_nothing(hermes_home, ledger_dir, screen, monkeypatch):
+    """The person's own words, declared as theirs, in a chat they asked Memoe not to remember:
+    no extractor call and no claim from the memory tool. The same chat's next turn without the
+    header is read again, so the switch is per turn and never sticks to the provider."""
+    asked = []
+    p = _provider_on("api_server", hermes_home, ledger_dir, monkeypatch, asked)
+    with _origin("person"), _not_remembered():
+        p.sync_turn(turn(SAID_DANA), "")
+        p.on_memory_write("add", "memory", "partner is Dana", {"write_origin": "assistant_tool"})
+    assert asked == []
+    assert p.store.live("memory") == []
+    with _origin("person"):
+        p.sync_turn(turn(SAID_DANA), "")
+        p.on_memory_write("add", "memory", "partner is Dana", {"write_origin": "assistant_tool"})
+    assert len(asked) == 1
+    assert p.store.live("memory") == ["partner is Dana"]

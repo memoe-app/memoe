@@ -10,6 +10,18 @@ import Foundation
 /// line stays as it was; this is the spoken half.
 enum SpokenError {
 
+    /// A question asked with no AI connected. It used to get the written
+    /// line and silence; now it gets this, and the place to connect one
+    /// opens beside it. Short enough to hear, and no menu path — the
+    /// screen it opens is the instruction.
+    static let connectAnAI = "I can't answer yet. Connect an AI first, then ask me again."
+
+    /// What a failed turn says out loud: the one useful sentence when the
+    /// reason is that nothing is connected, the error otherwise.
+    static func line(for message: String, needsSignIn: Bool) -> String {
+        needsSignIn || message.hasPrefix(HermesKey.needSignInPrefix) ? connectAnAI : line(for: message)
+    }
+
     /// The error in a sentence short enough to hear: the engine's own prefix
     /// ("claude turn failed:") dropped, a time zone in brackets dropped, the
     /// "·" the provider uses between clauses read as a full stop, and cut at

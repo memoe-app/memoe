@@ -16,6 +16,7 @@
 # seen to fail is decoration, so both are checked by planting a leak and
 # demanding a non-zero exit.
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 SCRATCH="${MOE_TEST_SCRATCH:-$(mktemp -d)}"
@@ -533,7 +534,11 @@ RT=""
 # A real python-build-standalone 3.14: the staged seed's own store first, then
 # a uv-managed one. Read-only: it is cloned, never written.
 for c in "$ROOT/hermes-seed/tools"/python-3.14*/ "$HOME/.local/share/uv/python"/cpython-3.14*/; do
-  [ -x "$c/bin/python3.14" ] && { RT="${c%/}"; break; }
+  # Physically: uv keeps `cpython-3.14-…` as a symlink to the patch-level
+  # directory, and `cp -R` of a link copies the link, so the "seed" below
+  # started the uv interpreter by its absolute path and was refused as
+  # running from outside itself — the check right, the fixture wrong.
+  [ -x "$c/bin/python3.14" ] && { RT="$(cd "$c" && pwd -P)"; break; }
 done
 if [ -z "$RT" ]; then
   skipped=$((skipped+1))

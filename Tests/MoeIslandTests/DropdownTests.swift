@@ -231,6 +231,30 @@ import Testing
         #expect(chat < IslandChat.height(long))
     }
 
+    /// The owner, 2026-10-30: clicked open, "it doesn't actually expand
+    /// more. I can't see the whole thing." The hover panel and the open one
+    /// were the same height; the open one now has room to grow.
+    @Test func clickedOpenALongAnswerGetsMoreRoomThanOnHover() {
+        let answer: [IslandChat.Row] = [.you(id: "1", text: "explain it", live: false),
+                                        .moe(id: "2", text: String(repeating: "word ", count: 500))]
+        let c = Dropdown.Contents(chat: answer, field: true)
+        let hover = Dropdown.layout(c)
+        let open = Dropdown.layout(c, maximum: Dropdown.maximum(expanded: true))
+        let grown = Dropdown.expandedMaximumHeight - Dropdown.maximumHeight
+        #expect(open.height == hover.height + grown)
+        #expect(open.height <= Dropdown.expandedMaximumHeight)
+        #expect(open.chat - hover.chat == grown,
+                "the extra height went somewhere other than the conversation")
+    }
+
+    @Test func clickedOpenAShortConversationIsNoTaller() {
+        let rows: [IslandChat.Row] = [.you(id: "1", text: "hi", live: false), .moe(id: "2", text: "Hello.")]
+        let c = Dropdown.Contents(chat: rows, field: true)
+        let open = Dropdown.layout(c, maximum: Dropdown.maximum(expanded: true))
+        #expect(open.height == Dropdown.layout(c).height)
+        #expect(open.chat == Dropdown.layout(c).chat)
+    }
+
     @Test func aShortConversationIsNotSqueezed() {
         let rows: [IslandChat.Row] = [.you(id: "1", text: "hi", live: false), .moe(id: "2", text: "Hello.")]
         let c = Dropdown.Contents(chat: rows, controls: true, field: true, banners: 110)

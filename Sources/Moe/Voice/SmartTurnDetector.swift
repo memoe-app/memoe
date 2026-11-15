@@ -13,9 +13,10 @@ import OnnxRuntimeBindings
 /// listener.
 ///
 /// Which file is loaded comes from `TurnModelCatalog` (today v3.2 alone,
-/// fetched once into `<Moe home>/models/smart-turn`; `MOE_TURN_MODEL` pins
-/// another for a bench). Without a model the machine's silence fallback
-/// still ends every turn, just later.
+/// fetched once into `<Moe home>/models/smart-turn` and checked against its
+/// pinned SHA-256; `MOE_TURN_MODEL` names another for a bench). Without a
+/// model the machine's silence fallback still ends every turn, just later —
+/// and `VoiceEngine` keeps trying to load one (`TurnModelRetry`).
 actor SmartTurnDetector {
 
     /// Above this the turn is over. The reference's own value, and it is
@@ -141,15 +142,14 @@ actor SmartTurnDetector {
     }
 
     /// The model's file when it is on disk and verifies (`TurnModelCatalog.
-    /// accepts`: ours by SHA-256; upstream's by "plausibly a model", so an
-    /// upstream re-upload under the same name is picked up rather than
-    /// refused forever). A file that does not verify is deleted.
+    /// accepts`: by SHA-256, every launch — 8.7 MB, a few milliseconds). A
+    /// file that does not verify is deleted and fetched again.
     private static func onDisk(_ model: TurnModelCatalog.Model) -> URL? {
         if model.url.isFileURL { return model.url }
         let file = dir.appendingPathComponent(model.file)
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return nil }
-        if TurnModelCatalog.accepts(model, data: data) { return file }
-        Log.write("smart turn: \(model.file) on disk does not verify — it will be fetched again")
+        guard let why = TurnModelCatalog.rejection(model, data: data) else { return file }
+        Log.write("smart turn: \(model.file) on disk does not verify (\(why)) — it will be fetched again")
         try? FileManager.default.removeItem(at: file)
         return nil
     }
@@ -169,13 +169,16 @@ actor SmartTurnDetector {
             try? fm.removeItem(at: tmp)
             throw URLError(.badServerResponse)
         }
-        guard let data = try? Data(contentsOf: tmp, options: .mappedIfSafe),
-              TurnModelCatalog.accepts(model, data: data) else {
+        guard let data = try? Data(contentsOf: tmp, options: .mappedIfSafe) else {
             try? fm.removeItem(at: tmp)
             throw URLError(.cannotDecodeContentData)
         }
-        if model.sha256 == nil, data.count != model.bytes {
-            Log.write("smart turn: \(model.file) is \(data.count) bytes, expected \(model.bytes) — upstream changed it; trying it anyway")
+        // Not "tried anyway": a download that is not the pinned file is not
+        // loaded, not kept, and the caller tries again later.
+        if let why = TurnModelCatalog.rejection(model, data: data) {
+            try? fm.removeItem(at: tmp)
+            Log.write("smart turn: REFUSED the download of \(model.file) — \(why)")
+            throw TurnModelCatalog.Refused(model: model.name, why: why)
         }
         if fm.fileExists(atPath: file.path) { try fm.removeItem(at: file) }
         try fm.moveItem(at: tmp, to: file)

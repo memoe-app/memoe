@@ -1,4 +1,6 @@
 #!/bin/bash
+# NEEDS: debug-confirm
+#
 # A confirmation card is bound to whoever asked for it (Sources/MoeDesign/
 # ConfirmLifecycle.swift, tools/confirm.sh).
 #
@@ -18,6 +20,7 @@
 # binary FAILS rather than skipping: a check that cannot run is not a pass.
 set -u
 
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$HERE/.."
 # Always under /private/tmp, whatever $TMPDIR says. confirm.sh honours its

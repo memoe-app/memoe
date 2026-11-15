@@ -61,7 +61,7 @@ struct LoopLedger {
         guard FileManager.default.fileExists(atPath: script.path) else { return nil }
         return await Task.detached { () -> Reply? in
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            p.executableURL = URL(fileURLWithPath: BrainSetup.python())
             p.arguments = [script.path] + args
             let out = Pipe()
             p.standardOutput = out

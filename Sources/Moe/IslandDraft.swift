@@ -17,6 +17,14 @@ final class IslandDraft: ObservableObject {
     /// Photos and files waiting to go with it — added with the field's +, or
     /// dropped on the notch.
     @Published var attachments: [ChatAttachment] = []
+    /// The ⋯ has slid its controls out. Here, not `@State` on the view, for
+    /// the same reason as the text: on a floating capsule's compact card
+    /// (`IslandView.trayInHeader`) the controls take a row only while they
+    /// are out, so `NotchIsland` has to know to size the card for it.
+    @Published var trayOpen = false
+    /// Answers whose folded steps line has been opened, by row id. Here so
+    /// `NotchIsland` sizes the card for the opened list.
+    @Published var openSteps: Set<String> = []
 
     /// Something is waiting in the field, words or files. Holds a panel open.
     var inProgress: Bool {

@@ -46,7 +46,7 @@ struct InboxQuietConductorTests {
     @Test func dismissFinishesTheCardAndItLeavesTheCount() throws {
         let moe = try Self.make()
         let t = Self.tag()
-        moe.receiveNotice(Self.input("Your dashboard still needs expense tracking \(t)."))
+        moe.arrive(Self.input("Your dashboard still needs expense tracking \(t)."))
         let n = try #require(moe.notices.first { $0.body.contains(t) })
         let before = moe.waitingNotices.count
         moe.dismissNotice(n.id)
@@ -59,7 +59,7 @@ struct InboxQuietConductorTests {
     @Test func dismissOnAnOfferDeclinesItAsNotNow() throws {
         let moe = try Self.make()
         let sid = "sit_\(Self.tag())"
-        moe.receiveNotice(Self.input("A reply is ready.", offer: sid))
+        moe.arrive(Self.input("A reply is ready.", offer: sid))
         let n = try #require(moe.notices.first { $0.offer == sid })
         moe.dismissNotice(n.id)
         #expect(moe.notice(n.id)?.status == .done)
@@ -71,7 +71,7 @@ struct InboxQuietConductorTests {
     @Test func doneOnAnOfferIsHandledNotNotNow() throws {
         let moe = try Self.make()
         let sid = "sit_\(Self.tag())"
-        moe.receiveNotice(Self.input("A reply is ready.", offer: sid))
+        moe.arrive(Self.input("A reply is ready.", offer: sid))
         let n = try #require(moe.notices.first { $0.offer == sid })
         moe.finishNotice(n.id, outcome: "Done")
         #expect(Self.feedback(sid) == ["handled"], "Done taught the learner the person did not want it")
@@ -80,7 +80,7 @@ struct InboxQuietConductorTests {
     @Test func notThisKindRecordsTheStrongestNo() throws {
         let moe = try Self.make()
         let sid = "sit_\(Self.tag())"
-        moe.receiveNotice(Self.input("A reply is ready.", offer: sid))
+        moe.arrive(Self.input("A reply is ready.", offer: sid))
         let n = try #require(moe.notices.first { $0.offer == sid })
         moe.declineNotice(n.id, kind: true)
         #expect(Self.feedback(sid) == ["not-this-kind"])
@@ -92,14 +92,14 @@ struct InboxQuietConductorTests {
     @Test func aNoticeAboutAnOpenSubjectUpdatesThatCard() throws {
         let moe = try Self.make()
         let sid = "sit_\(Self.tag())"
-        moe.receiveNotice(Self.input("Israel may be about to send more money.", at: Date().addingTimeInterval(-600), offer: sid))
+        moe.arrive(Self.input("Israel may be about to send more money.", at: Date().addingTimeInterval(-600), offer: sid))
         let first = try #require(moe.notices.first { $0.offer == sid })
         moe.dismissNotice(first.id)   // finished: the next one is a new card
-        moe.receiveNotice(Self.input("Israel is being pressured again.", offer: sid))
+        moe.arrive(Self.input("Israel is being pressured again.", offer: sid))
         let second = try #require(moe.notices.first { $0.offer == sid && $0.status == .open })
         #expect(second.id != first.id)
         moe.openInbox()
-        moe.receiveNotice(Self.input("Israel has lost $4,495 this month.", offer: sid))
+        moe.arrive(Self.input("Israel has lost $4,495 this month.", offer: sid))
         let open = moe.notices.filter { $0.subject == "situation:\(sid)" && $0.status == .open }
         #expect(open.count == 1)
         #expect(open.first?.id == second.id)
@@ -108,12 +108,12 @@ struct InboxQuietConductorTests {
 
         // A loop card, by its slug; and the writer's own subject.
         let slug = "hanoi-\(Self.tag())"
-        moe.receiveNotice(Self.input("You need a hotel for Hanoi.", loops: [slug]))
-        moe.receiveNotice(Self.input("The host cancelled Hanoi.", loops: [slug, "other"]))
+        moe.arrive(Self.input("You need a hotel for Hanoi.", loops: [slug]))
+        moe.arrive(Self.input("The host cancelled Hanoi.", loops: [slug, "other"]))
         #expect(moe.notices.filter { $0.subject == "loop:\(slug)" }.count == 1)
         let ev = "event:\(Self.tag())"
-        moe.receiveNotice(Self.input("Andrew at 3.", subject: ev))
-        moe.receiveNotice(Self.input("Andrew at 3 PM today, four items.", subject: ev))
+        moe.arrive(Self.input("Andrew at 3.", subject: ev))
+        moe.arrive(Self.input("Andrew at 3 PM today, four items.", subject: ev))
         #expect(moe.notices.filter { $0.subject == ev }.count == 1)
     }
 
@@ -137,11 +137,11 @@ struct InboxQuietConductorTests {
         let moe = try Self.make()
         let t = Self.tag()
         let old = Date().addingTimeInterval(-InboxLifecycle.grace - 60)
-        moe.receiveNotice(Self.input("Stale offer \(t).", at: old, offer: "sit_stale_\(t)"))
-        moe.receiveNotice(Self.input("Live offer \(t).", at: old, offer: "sit_live_\(t)"))
-        moe.receiveNotice(Self.input("Shlomo waits \(t).", at: old, loops: ["cash-\(t)"]))
-        moe.receiveNotice(Self.input("Eli waits \(t).", at: old, loops: ["eli-\(t)"]))
-        moe.receiveNotice(Self.input("Review \(t) starts in 9 minutes.", at: Date().addingTimeInterval(-10 * 60),
+        moe.arrive(Self.input("Stale offer \(t).", at: old, offer: "sit_stale_\(t)"))
+        moe.arrive(Self.input("Live offer \(t).", at: old, offer: "sit_live_\(t)"))
+        moe.arrive(Self.input("Shlomo waits \(t).", at: old, loops: ["cash-\(t)"]))
+        moe.arrive(Self.input("Eli waits \(t).", at: old, loops: ["eli-\(t)"]))
+        moe.arrive(Self.input("Review \(t) starts in 9 minutes.", at: Date().addingTimeInterval(-10 * 60),
                                      job: InboxLifecycle.headsUpJob))
         let sources = InboxLifecycle.Sources(offerLive: { $0 == "sit_live_\(t)" },
                                              openLoops: ["eli-\(t)"])
@@ -182,7 +182,7 @@ struct InboxQuietConductorTests {
     @Test func markAllReadAndArchiveSelectedAndAll() throws {
         let moe = try Self.make()
         let t = Self.tag()
-        for i in 0..<4 { moe.receiveNotice(Self.input("Card \(i) \(t).")) }
+        for i in 0..<4 { moe.arrive(Self.input("Card \(i) \(t).")) }
         let mine = { moe.notices.filter { $0.body.contains(t) } }
         #expect(mine().allSatisfy { !$0.seen })
         moe.markAllNoticesRead()
@@ -209,10 +209,10 @@ struct InboxQuietConductorTests {
         defer { try? FileManager.default.removeItem(at: flag.deletingLastPathComponent()) }
         let t = Self.tag()
         let now = Date()
-        moe.receiveNotice(Self.input("Insurer offer \(t).", at: now.addingTimeInterval(-3600), offer: "sit_ins_\(t)"))
-        moe.receiveNotice(Self.input("Old offer \(t).", at: now.addingTimeInterval(-50 * 3600), offer: "sit_old_\(t)"))
-        moe.receiveNotice(Self.input("Brief \(t).", at: now.addingTimeInterval(-600), kind: "brief"))
-        moe.receiveNotice(Self.input("Hanoi \(t).", at: now.addingTimeInterval(-600), loops: ["hanoi-\(t)"]))
+        moe.arrive(Self.input("Insurer offer \(t).", at: now.addingTimeInterval(-3600), offer: "sit_ins_\(t)"))
+        moe.arrive(Self.input("Old offer \(t).", at: now.addingTimeInterval(-50 * 3600), offer: "sit_old_\(t)"))
+        moe.arrive(Self.input("Brief \(t).", at: now.addingTimeInterval(-600), kind: "brief"))
+        moe.arrive(Self.input("Hanoi \(t).", at: now.addingTimeInterval(-600), loops: ["hanoi-\(t)"]))
         let n = moe.archiveBacklogOnce(now: now, flag: flag)
         #expect(n >= 3)
         let open = moe.notices.filter { $0.status == .open }
@@ -220,7 +220,7 @@ struct InboxQuietConductorTests {
         #expect(moe.notices.filter { $0.body.contains(t) && $0.status == .done }.allSatisfy { $0.outcome == "Archived" })
         #expect(FileManager.default.fileExists(atPath: flag.path))
         // Once: a second launch archives nothing, whatever is waiting.
-        moe.receiveNotice(Self.input("New brief \(t).", kind: "brief"))
+        moe.arrive(Self.input("New brief \(t).", kind: "brief"))
         #expect(moe.archiveBacklogOnce(now: now, flag: flag) == 0)
         #expect(moe.notices.contains { $0.body == "New brief \(t)." && $0.status == .open })
     }

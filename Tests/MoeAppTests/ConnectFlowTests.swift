@@ -342,3 +342,52 @@ struct MoeEmailRowTests {
         #expect(!ConnectionDetail.offersCheckAgain(row("slack", auth: .oneClick)))
     }
 }
+
+/// A certificate failure reaches the sheet as one plain sentence and advice
+/// that fits it — never the raw SSL line, never a traceback's neighbour, and
+/// never "check the key was copied whole". Measured 2026-11-12: a python.org
+/// Python 3.15 with an empty trust store made every helper fail like this.
+@MainActor
+struct CertificateFailureWordsTests {
+    static let traceback = """
+    Opening Gmail's sign-in page…
+    Traceback (most recent call last):
+      File "/x/connect.py", line 12, in <module>
+        urllib.request.urlopen(url)
+    ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)
+    """
+    static let folded = "✗ Couldn't reach Composio: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)>\n"
+
+    @Test func everySpellingOfACertificateFailureBecomesThePlainSentence() {
+        for output in [Self.traceback, Self.folded,
+                       "curl: (60) SSL certificate problem: unable to get local issuer certificate\n",
+                       "Error: requests.exceptions.SSLError: HTTPSConnectionPool(host='backend.composio.dev')\n",
+                       "✗ The certificate for this server is invalid.\n"] {
+            let r = ScriptRunner.Result(status: 1, output: output, timedOut: false)
+            #expect(r.lastHumanLine == CertificateFailure.sentence, "\(output)")
+            #expect(!r.lastHumanLine.contains("SSL") && !r.lastHumanLine.contains("_ssl"))
+        }
+    }
+
+    @Test func anyOtherFailureKeepsItsOwnWords() {
+        for line in ["✗ That key was refused by Firecrawl.", "✗ Nobody scanned the code in time.",
+                     "✗ The database URL needs sslmode=require."] {
+            let r = ScriptRunner.Result(status: 1, output: line + "\n", timedOut: false)
+            #expect(r.lastHumanLine == line)
+        }
+        #expect(CertificateFailure.plain("Didn't connect.") == "Didn't connect.")
+    }
+
+    /// Through the real flow: the sheet's failed text AND the line under it.
+    @Test func theSheetSaysItPlainlyAndTellsThemWhatToDo() async {
+        let (flow, launches) = isolatedFlow(output: Self.traceback, status: 1)
+        flow.start(row("moemail", auth: .oneClick))
+        flow.fieldValue = "sam"
+        flow.continueField()
+        #expect(await eventually { if case .failed = flow.phase { return true }; return false })
+        #expect(!launches.calls.isEmpty)
+        #expect(flow.phase == .failed(CertificateFailure.sentence))
+        #expect(flow.nextStep == CertificateFailure.nextStep)
+        #expect(!flow.nextStep.lowercased().contains("key"))
+    }
+}

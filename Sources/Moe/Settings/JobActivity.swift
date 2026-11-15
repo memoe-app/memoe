@@ -176,7 +176,7 @@ enum JobActivity {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes-jobs/job-activity.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes-jobs/job-activity.py")
+        if let c = Payload.checkoutPath("moe-home/hermes-jobs/job-activity.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
@@ -187,7 +187,7 @@ enum JobActivity {
     /// main thread.
     static func all(days: Int = 7) -> [Job]? {
         guard let script = scriptPath() else { return nil }
-        let r = ScriptRunner.run("/usr/bin/python3", [script, "--days", String(days)], timeout: 20)
+        let r = ScriptRunner.run(BrainSetup.python(), [script, "--days", String(days)], timeout: 20)
         guard r.status == 0, let data = jsonPart(r.output) else { return nil }
         return try? JSONDecoder().decode([Job].self, from: data)
     }

@@ -33,7 +33,7 @@ struct Ticket12WiringTests {
         #expect(watch.contains("speaking: self.playbackBusy()"))
         #expect(!watch.contains("calls.isEmpty"), "the watchdog flips on a single poll again")
 
-        let start = try #require(Self.slice(fe, from: "func start() throws {", to: "let micFormat"))
+        let start = try #require(Self.slice(fe, from: "private func startGraph() throws {", to: "var micFormat"))
         #expect(start.contains("!$0.isBrowser"), "a browser's grab turns the canceller off at start again")
         #expect(start.contains("callHolding == nil"))
 

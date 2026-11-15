@@ -51,7 +51,9 @@ struct DictationHiddenTests {
     @MainActor func onboardingSnapshot() {
         let shots = OnboardingSnapshot.shots
         #expect(shots.contains { $0.pose.step == .dictate } == Features.dictation)
-        #expect(shots.count == (Features.dictation ? 18 : 16))
+        // 24 since 2026-11-12: five more of the brain screen, for the key,
+        // free and local-model rows that now wait on Settings › Brain.
+        #expect(shots.count == (Features.dictation ? 26 : 24))
     }
 
     @Test("the main window's sidebar has no Dictation row")

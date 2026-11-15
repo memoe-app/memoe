@@ -1,0 +1,21 @@
+# Which releases carry the on-demand models, and how (docs/SLIM-DOWNLOAD.md §7).
+#
+#   <from this version on>  <off|prepare|on>
+#
+# A release takes the mode of the last line at or below its version; before
+# the first line it is `off`. build.sh reads this for what a real Memoe gets
+# when nobody says otherwise, and publish-release.sh reads it again and
+# refuses an image whose Info.plist says anything else — so the two releases
+# go out in order because of this file, not because someone remembered an
+# environment variable on the day.
+#
+# Rules scripts/on-demand-plan.sh enforces: versions ascend; `on` may only
+# follow `prepare` (or `on`), because an install that goes from a full build
+# straight to a slim one re-downloads 113 MB it already had.
+#
+# 0.3.25 — the owner's decision, 2026-11-12: the "prepare" release. Same
+# download as 0.3.24; the app copies the two models out of itself so the slim
+# release loses nothing. Add the `on` line when that release is decided, at
+# least a week later, in the same change that does docs/SLIM-DOWNLOAD.md §8
+# step 4.
+0.3.25  prepare

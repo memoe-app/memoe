@@ -5,8 +5,16 @@ import Foundation
 ///
 /// Today one model: **smart-turn-v3.2**, Pipecat's own (BSD-2), fetched once
 /// from Hugging Face into `<Moe home>/models/smart-turn/` the first time voice
-/// starts and checked by size ("plausibly a model"), so an upstream re-upload
-/// under the same name is picked up rather than refused forever.
+/// starts — from a pinned revision, and refused unless it is the exact file
+/// Moe was measured with (`upstream.sha256`).
+///
+/// It used to be checked by size alone ("plausibly a model"), from `main`, so
+/// that an upstream re-upload under the same name would be picked up. That is
+/// the wrong way round for the thing that decides when a person has finished
+/// talking: every threshold in `SmartTurnDetector` was measured against this
+/// file, and a different one arriving unannounced is a behaviour change
+/// nobody chose — or, from a tampered mirror, a model nobody vetted. A new
+/// upstream model is adopted here, on purpose, with its hash.
 ///
 /// The catalog exists so a better turn model can be put in front of v3.2
 /// without losing it: list it first in `preference` with its SHA-256 (ours
@@ -26,17 +34,22 @@ public enum TurnModelCatalog {
         /// File name under `models/smart-turn/`.
         public let file: String
         public let url: URL
-        /// Hex SHA-256 of the file; nil means "size-checked only" (upstream's,
-        /// which may be re-uploaded under the same name).
+        /// Hex SHA-256 of the file. Nil only for a model named by path
+        /// (`MOE_TURN_MODEL`, the benches): size-checked, never downloaded.
         public let sha256: String?
         public let bytes: Int
     }
 
+    /// The hash is the file's, three ways agreeing on 2026-11-12: Hugging
+    /// Face's own LFS record for it, the `x-linked-etag` of this URL, and
+    /// `shasum -a 256` of the copy the owner's Mac has run since 2026-09-15.
+    /// The URL names the commit, not `main`, so the bytes behind it cannot
+    /// change under the hash.
     public static let upstream = Model(
         name: "smart-turn-v3.2",
         file: "smart-turn-v3.2-cpu.onnx",
-        url: URL(string: "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx")!,
-        sha256: nil,
+        url: URL(string: "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx")!,
+        sha256: "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
         bytes: 8_679_182)
 
     /// Preference order. The first that is on disk (or downloads), verifies
@@ -82,9 +95,31 @@ public enum TurnModelCatalog {
     /// Is this file the model it claims to be? Plausibly a model (over 1 MB),
     /// and exactly its hash when the catalog pins one.
     public static func accepts(_ model: Model, data: Data) -> Bool {
-        guard data.count > 1_000_000 else { return false }
-        guard let want = model.sha256 else { return true }
-        return sha256Hex(data) == want.lowercased()
+        rejection(model, data: data) == nil
+    }
+
+    /// Why this file is not the model, for the log; nil when it is.
+    public static func rejection(_ model: Model, data: Data) -> String? {
+        guard data.count > 1_000_000 else {
+            return "\(data.count) bytes is not a model"
+        }
+        guard let want = model.sha256 else { return nil }
+        let got = sha256Hex(data)
+        guard got == want.lowercased() else {
+            return "sha256 \(got) is not the pinned \(want.lowercased()) (\(data.count) bytes, expected \(model.bytes))"
+        }
+        return nil
+    }
+
+    /// A file that is not the model it was fetched as.
+    public struct Refused: LocalizedError, Equatable, Sendable {
+        public let model: String
+        public let why: String
+        public init(model: String, why: String) {
+            self.model = model
+            self.why = why
+        }
+        public var errorDescription: String? { "\(model) refused: \(why)" }
     }
 
     public static func sha256Hex(_ data: Data) -> String {

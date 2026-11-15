@@ -347,7 +347,9 @@ struct OnboardingDefaultsTests {
     @Test("Say hello says why, in one plain line each")
     func permissionLines() {
         #expect(Onboarding.accessibilityWhy.contains("talk key"))
-        #expect(Onboarding.accessibilityWhy.contains("click for you"))
+        // Not "click for you": that is CuaDriver's switch, not Memoe's
+        // (FirstRunPermissionCopyTests).
+        #expect(Onboarding.screenHelperNote.contains("CuaDriver"))
         #expect(Onboarding.screenRecordingWhy.contains("see your screen"))
     }
 

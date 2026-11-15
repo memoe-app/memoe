@@ -173,6 +173,16 @@ class ChatsTest(unittest.TestCase):
             self.m.chats("0", now=NOW, db=self.db, persons_text=lambda t: t)
 
     def test_the_real_sweep_reader_loads(self):
+        # THIS checkout's sweep.py. `_persons_text` looks beside Hermes first
+        # ($HERMES_HOME/plugins/moe-screen) and in the repo second, and with
+        # HERMES_HOME unset that is the plugin installed on the developer's
+        # Mac — here one from 2026-09-23 with no `persons_text` at all. It
+        # used to pass only when an earlier test in the run had failed and
+        # left HERMES_HOME pointing at a temp directory behind it.
+        previous = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = self.tmp
+        self.addCleanup(lambda: os.environ.pop("HERMES_HOME", None) if previous is None
+                        else os.environ.__setitem__("HERMES_HOME", previous))
         fn = self.m._persons_text()
         self.assertEqual(fn("Now: Tuesday\n\nI'll send it"), "I'll send it")
 

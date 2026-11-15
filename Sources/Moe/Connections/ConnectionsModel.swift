@@ -416,7 +416,12 @@ struct Pairing: Identifiable, Equatable {
 
     /// The request id the pairing script takes (without the platform prefix).
     var rawID: String { String(id.dropFirst(platform.count + 1)) }
-    var platformLabel: String { isSlackInstall ? "Slack" : ConnectionsCatalog.label(for: platform) }
+    var platformLabel: String {
+        if isSlackInstall { return "Slack" }
+        // A hello waiting at a channel Moe's cloud holds (`cloud_telegram`).
+        if platform.hasPrefix("cloud_") { return ConnectionsCatalog.label(for: String(platform.dropFirst(6))) }
+        return ConnectionsCatalog.label(for: platform)
+    }
     /// Not a stranger at all: an Add to Slack for Moe's own Slack app, already
     /// proved with a Google sign-in on the install page and waiting for this
     /// Mac's word as well — the second layer, never the only one
@@ -835,9 +840,21 @@ enum ConnectionsCatalog {
         // one without a score takes its native score, or falls back to its
         // place in the hand list — so a catalog script older than the
         // ranking still draws the shelves in the order they always had.
+        //
+        // `nativeRank` is on the ranking's scale and means something only
+        // beside it: each direct twin is scored just under what the ranking
+        // gives its broker row. With no ranking at all (composio-ranking.json
+        // missing or unreadable — hermes-catalog.py answers `{}` — or a
+        // catalog script older than it) the broker rows have no score, fall
+        // back to their place in the hand list, which tops out at 60, and
+        // every twin with a native score in the 70s and 80s took the card
+        // from the broker's row: mcp/notion before composio/notion, the order
+        // the 2026-09-11 decision reversed. So without a ranking nobody is
+        // scored and the hand lists decide, broker first, as they are written.
+        let hasRanking = all.contains { $0.rank > 0 }
         func score(_ c: Connection, _ list: [String]) -> Int {
             if c.rank > 0 { return c.rank }
-            if let n = nativeRank[c.id] { return n }
+            if hasRanking, let n = nativeRank[c.id] { return n }
             if let i = list.firstIndex(of: c.id) { return max(1, 60 - i) }
             return 0
         }
@@ -1278,7 +1295,7 @@ enum ConnectionsCatalog {
         // account" — the button is the command.
         s = s.replacingOccurrences(of: #"(?i)\.?\s*\(?run (scripts/)?connect[^.)]*\)?\.?"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: "Hermes answers nobody", with: "Moe answers nobody")
-        s = s.replacingOccurrences(of: "restart Hermes", with: "restart Moe")
+        s = s.replacingOccurrences(of: "restart Hermes", with: "restart Memoe")
         s = s.replacingOccurrences(of: "Restart Hermes", with: "Restart Memoe")
         s = s.replacingOccurrences(of: "Moe starts Hermes", with: "Moe starts it")
         // "token present" (a platform's key is in .env) — the pill already
@@ -1465,6 +1482,47 @@ enum MacSources {
     }
 }
 
+// MARK: - Certificate failures
+
+/// **A secure connection that could not be made, in words a person can use.**
+///
+/// Measured 2026-11-12: a python.org Python 3.15 first on PATH, with an empty
+/// trust store, made every helper script fail with
+/// `[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get
+/// local issuer certificate`, and Connections › Add another showed that raw
+/// line — or, when it came as a traceback, an unrelated earlier line — with
+/// "check the key was copied whole" under it. The cause is fixed
+/// (`BrainSetup.pathWithMoePython`); this is the net for the next one — a
+/// clock that is wrong, a VPN or web filter that inspects traffic, another
+/// interpreter — none of which a person fixes by pasting a key again.
+///
+/// Keyed on the words the TLS stacks themselves print (OpenSSL through
+/// Python, curl, URLSession), never on a script's own phrasing, so a new
+/// script walks into it.
+enum CertificateFailure {
+    static let sentence = "Moe couldn't make a secure connection to finish setting this up."
+    static let nextStep = "Quit Memoe, open it again, and try once more. If it still fails, check that your Mac's date and time are set automatically (System Settings › General › Date & Time), and pause any VPN or web filter while you connect."
+
+    /// Lowercased fragments only a TLS failure prints.
+    static let markers = [
+        "certificate_verify_failed", "certificate verify failed", "sslcertverificationerror",
+        "[ssl:", "ssl: certificate", "sslerror", "ssl error", "ssl_error",
+        "unable to get local issuer certificate", "self signed certificate",
+        "self-signed certificate", "certificate has expired", "certificate is not yet valid",
+        "tlsv1 alert", "tlsv13 alert", "wrong version number",
+        "curl: (60)", "curl: (35)", "nsurlerrorservercertificate",
+        "the certificate for this server is invalid", "secure connection to the server cannot be made",
+    ]
+
+    static func matches(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return markers.contains { lower.contains($0) }
+    }
+
+    /// `text` itself, or the plain sentence when it is a certificate failure.
+    static func plain(_ text: String) -> String { matches(text) ? sentence : text }
+}
+
 // MARK: - Running the scripts
 
 /// Runs a connection script with its output captured, a hard time limit,
@@ -1485,7 +1543,14 @@ enum ScriptRunner {
         /// all along. Those seventeen are fixed; this is here because the
         /// eighteenth has not been written yet. Enforcement belongs on the
         /// path a new one has to travel, not on a list of the ones we found.
+        ///
+        /// A certificate failure anywhere in the output wins over the last
+        /// line, because Python reports it in a traceback (which
+        /// `humanLine` drops, leaving whatever "Opening…" came before it) or
+        /// folds it into a `✗ … <urlopen error [SSL: …]>` line nobody can act
+        /// on. `CertificateFailure` says it in one plain sentence instead.
         var lastHumanLine: String {
+            if CertificateFailure.matches(output) { return CertificateFailure.sentence }
             let raw = Result.humanLine(in: output)
             return ConnectionsCatalog.renameEngine(raw)
         }
@@ -1593,7 +1658,7 @@ enum ScriptRunner {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("scripts/\(name)").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/scripts/\(name)")
+        if let c = Payload.checkoutPath("scripts/\(name)") { candidates.append(c) }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
@@ -1614,7 +1679,14 @@ enum ScriptRunner {
                 return inApp
             }
         }
-        return URL(fileURLWithPath: NSHomeDirectory() + "/moe/moe-home/connectors", isDirectory: true)
+        // A developer's own checkout, debug builds only. A shipped Moe that
+        // has neither copy answers with the installed path: the catalog there
+        // is missing, the pane says so, and nothing is read from somewhere
+        // the person never installed.
+        if let c = Payload.checkoutPath("moe-home/connectors") {
+            return URL(fileURLWithPath: c, isDirectory: true)
+        }
+        return installed
     }
 
     static func environment(_ extra: [String: String] = [:]) -> [String: String] {
@@ -1630,8 +1702,13 @@ enum ScriptRunner {
         // is set — so a hand-run list can never make Calendar vanish from
         // Settings › Background.
         env["MOE_FROM_APP"] = "1"
-        env["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:"
-                    + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        // Moe's own Python first: 123 helpers start by `#!/usr/bin/env
+        // python3` and their shell scripts say `python3` 183 times more, and
+        // whichever Python this Mac has in /usr/local/bin is not one Moe can
+        // vouch for (`BrainSetup.pathWithMoePython` has what that cost).
+        env["PATH"] = BrainSetup.pathWithMoePython(
+            "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:"
+            + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"))
         for (k, v) in extra { env[k] = v }
         return env
     }
@@ -1793,7 +1870,25 @@ final class ConnectionsModel: ObservableObject {
     nonisolated static let filesTimeout: TimeInterval = 30
     nonisolated static let liveTimeout: TimeInterval = 90
 
+    /// Rows put here by hand rather than read from this Mac — only for
+    /// `--settings-snapshot` and the layout tests, which draw a Gmail with
+    /// three accounts without there being one. While posed, `reload` does
+    /// nothing: a photograph must not start the connector scripts, and a
+    /// read that came back late would replace the pose mid-picture.
+    private(set) var posed = false
+    func pose(_ rows: [Connection]?) {
+        generation += 1          // a read already in flight loses
+        posed = rows != nil
+        connections = rows ?? []
+        warning = ""
+        pairings = []
+        loading = false
+        checkingLive = false
+        loadedOnce = rows != nil
+    }
+
     func reload() {
+        guard !posed else { return }
         generation += 1
         let gen = generation
         loading = true

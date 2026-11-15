@@ -56,6 +56,10 @@ enum BrainEvent {
     case ready(sessionID: String, tools: [String], mcpServers: [String])
     /// A piece of the reply. Not emitted for silent turns.
     case textDelta(String)
+    /// A piece of the model's thinking, for providers that stream it
+    /// (`delta.reasoning_content`). Shown folded inside the steps, never
+    /// spoken. Not emitted for silent turns.
+    case reasoningDelta(String)
     /// The reply is complete; carries the full text so the transcript can be
     /// corrected if deltas were missed, and why it ended. Not emitted for
     /// silent turns.
@@ -124,6 +128,12 @@ protocol BrainProvider: AnyObject {
     /// with `reset()` so the next session starts on the new model.
     func apply(brain: BrainSelection)
 
+    /// Whether what is said in the open chat may be remembered. `false` for a
+    /// chat the person marked "Don't remember this chat": every turn queued
+    /// from then on asks the brain to learn nothing and write no memory. Brains
+    /// with no memory of their own ignore it.
+    func remember(_ remembers: Bool)
+
     /// A throwaway silent turn at launch, so the first real question doesn't
     /// pay the cold-start cost and auth problems surface while the panel is
     /// still hidden.
@@ -149,6 +159,13 @@ protocol BrainProvider: AnyObject {
     /// as the person by omission.
     func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
               starter: TurnStarter)
+
+    /// The same turn, also saying whether the person SPOKE it and is waiting
+    /// to hear the answer. A brain that can open such a turn faster does
+    /// (`HermesBrain`); every other brain ignores the word and sends the turn
+    /// as it always did, which is the default below.
+    func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
+              starter: TurnStarter, spoken: Bool)
 
     /// Abandon whatever is in flight and begin a clean conversation with a
     /// freshly built system prompt. Also the only way to interrupt a turn.
@@ -206,6 +223,10 @@ protocol BrainProvider: AnyObject {
 }
 
 extension BrainProvider {
+    func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
+              starter: TurnStarter, spoken: Bool) {
+        send(text, images: images, silent: silent, logAs: logAs, starter: starter)
+    }
     func send(_ text: String, starter: TurnStarter) {
         send(text, images: [], silent: false, logAs: nil, starter: starter)
     }
@@ -231,6 +252,7 @@ enum TurnStarter: String, Sendable, Equatable {
 
 extension BrainProvider {
     func apply(brain: BrainSelection) {}
+    func remember(_ remembers: Bool) {}
     func noteSystemSleep() {}
     func noteSystemWake() {}
     func reset() { reset(warmingUp: true) }

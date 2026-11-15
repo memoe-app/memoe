@@ -44,6 +44,9 @@ extension Notification.Name {
     static let moeShowSection = Notification.Name("moe.showSection")
     /// Open the Claude sign-in sheet (the Brain pane listens).
     static let moeSignIn = Notification.Name("moe.signIn")
+    /// A question was asked and no AI is connected: open the place to
+    /// connect one (AppDelegate.watchConnectAnAI).
+    static let moeConnectAnAI = Notification.Name("moe.connectAnAI")
     /// Threads changed on disk for a reason other than a reply landing —
     /// another device's turns arrived through the cloud. The Chat list
     /// reloads.

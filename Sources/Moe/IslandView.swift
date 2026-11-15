@@ -23,6 +23,15 @@ struct IslandView: View {
     @ObservedObject var conductor: Conductor
     let presentation: NotchIsland.Presentation
     let notchSize: CGSize
+    /// The Mac's floating camera capsule, when its cutout is one
+    /// (`NotchGeometry.Cutout`). `notchSize` is then only the box the menu
+    /// bar avoids; this is the glass. Nil on every other Mac, which draws
+    /// exactly as it always did.
+    var capsule: NotchGeometry.CapsuleCutout? = nil
+    /// Some app has the microphone open, so macOS is drawing its indicator
+    /// beside the capsule (`MicIndicatorWatch`). Memoe's own microphone is
+    /// counted without being told (`indicatorLive`).
+    var micOpenSomewhere = false
     let contentSize: CGSize
     /// The half-typed question. Held outside the view so the clock that
     /// folds a self-opened panel can see it — docs/PANEL-FINDINGS.md §7.
@@ -37,6 +46,14 @@ struct IslandView: View {
     var onClose: () -> Void = {}
     /// The ⋯ tray's window icon: the whole conversation in the Memoe window.
     var onOpenChat: () -> Void = {}
+    @State private var handOffKey = KeyWatch()
+    /// The header's pop-out: the chat leaves the notch for a window of its
+    /// own (`FloatingChatWindow`).
+    var onDetach: () -> Void = {}
+    /// Set when this is the floating window rather than the notch: the same
+    /// view, the same rows, the same field and tray, in a movable,
+    /// resizable window. Nil on the notch, which draws exactly as before.
+    var floating: FloatingChrome? = nil
     private var asked: String {
         get { draft.text }
         nonmutating set { draft.text = newValue }
@@ -77,6 +94,8 @@ struct IslandView: View {
     /// controls below need a stand-in offscreen.
     @Environment(\.islandSnapshot) private var snapshotting
     @Environment(\.islandPosedAccessibility) private var posedAccessibility
+    /// Reduce Motion: shapes change at once, and nothing loops.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The talk-key row's sentence, or nil when there is nothing to say.
     private var accessibilityProblem: String? {
@@ -94,7 +113,21 @@ struct IslandView: View {
     /// presence, your voice, and anything it has to tell you. Internal so the
     /// tests can read them off a real view.
     var ears: (left: IslandEars.Left?, right: IslandEars.Right?) {
-        IslandEars.of(Self.earInputs(conductor, open: isOpen, waiting: attentionWaiting))
+        IslandEars.of(Self.earInputs(conductor, open: isOpen, waiting: attentionWaiting,
+                                     capsule: capsule != nil))
+    }
+
+    /// Whether macOS may be drawing its microphone pill round the capsule
+    /// (`NotchGeometry.SystemIndicator`): this is a capsule Mac, and the
+    /// microphone is open — Memoe's, known the moment it opens, or anyone's.
+    var indicatorLive: Bool {
+        capsule != nil && (micOpenSomewhere || Self.usesMicrophone(conductor))
+    }
+    /// Memoe itself has the microphone: listening, in a conversation,
+    /// waiting for its name, dictating, or recording a meeting.
+    static func usesMicrophone(_ c: Conductor) -> Bool {
+        c.mode == .listening || c.inConversation || c.alwaysListening
+            || c.dictation != .off || c.meeting.isRecording
     }
 
     /// Collapsed and muted: the left ear says "Muted". Kept under its old
@@ -104,11 +137,17 @@ struct IslandView: View {
 
     /// What the ears are decided from. Static so `NotchIsland` sizes the
     /// click target from exactly what this view draws.
-    static func earInputs(_ c: Conductor, open: Bool, waiting: Bool) -> IslandEars.Inputs {
+    static func earInputs(_ c: Conductor, open: Bool, waiting: Bool,
+                          capsule: Bool = false) -> IslandEars.Inputs {
         var i = IslandEars.Inputs()
+        i.capsule = capsule
+        if capsule, c.dictation == .off, busy(c) {
+            i.workingWord = c.workingStep?.isEmpty == false ? "Working" : "Thinking"
+        }
         let dictationOn = c.dictation != .off
         i.open = open
         i.listening = c.mode == .listening
+        i.betweenTurns = c.betweenTurns
         i.speaking = c.mode == .speaking
         i.working = c.dictation == .transcribing || (!dictationOn && busy(c))
         i.muted = c.micMuted
@@ -157,7 +196,26 @@ struct IslandView: View {
     }
 
     /// The notch as it is drawn: the hardware's, or the stand-in's.
-    private var drawnNotch: CGSize { hasNotch ? notchSize : NotchGeometry.virtualNotch }
+    private var drawnNotch: CGSize { capsule?.size ?? (hasNotch ? notchSize : NotchGeometry.virtualNotch) }
+
+    /// How far each side reaches past the cutout. A capsule's growth is
+    /// capped (`CapsuleIsland.maximumLeftReach`); a notch's ears are not.
+    private var reach: (left: CGFloat, right: CGFloat) {
+        let r = Self.earReach(ears)
+        guard let capsule else { return r }
+        return CapsuleIsland.reach(capsule, left: r.left, right: r.right, indicatorLive: indicatorLive)
+    }
+
+    /// How far the folded island runs each side of the cutout's centre.
+    /// On a capsule that is `CapsuleIsland.folded`, which steps round the
+    /// system's microphone pill.
+    private var foldedExtent: (left: CGFloat, right: CGFloat) {
+        let r = reach
+        guard let capsule else { return (drawnNotch.width / 2 + r.left, drawnNotch.width / 2 + r.right) }
+        let f = CapsuleIsland.folded(capsule, leftReach: r.left, rightReach: r.right,
+                                     indicatorLive: indicatorLive)
+        return (-f.minX, f.maxX)
+    }
 
     /// The hover and click target: the notch and its ears folded, the panel
     /// open. Symmetric about the notch, because the window is centred on it;
@@ -165,8 +223,8 @@ struct IslandView: View {
     private var targetWidth: CGFloat {
         let base = NotchGeometry.targetWidth(for: notchSize)
         if isOpen { return max(contentSize.width, base) }
-        let r = Self.earReach(ears)
-        return max(base, drawnNotch.width + 2 * max(r.left, r.right))
+        let e = foldedExtent
+        return max(base, 2 * max(e.left, e.right))
     }
     private var targetHeight: CGFloat {
         if isOpen { return notchSize.height + contentSize.height }
@@ -180,12 +238,14 @@ struct IslandView: View {
     /// Folded, the notch and the ears that are out — not the blank menu bar
     /// on the side without one. Open, the whole frame.
     private var hitShape: IslandHitShape {
-        if isOpen { return IslandHitShape(full: true) }
-        let r = Self.earReach(ears)
         let base = NotchGeometry.targetWidth(for: notchSize)
+        // A capsule's open card floats: the strip above it is the menu
+        // bar's, except the column over the camera (`NotchIsland.hoverLift`).
+        if isOpen { return IslandHitShape(full: true, topInset: capsule?.topGap ?? 0, stem: base) }
+        let e = foldedExtent
         return IslandHitShape(full: false,
-                              left: max(base / 2, drawnNotch.width / 2 + r.left),
-                              right: max(base / 2, drawnNotch.width / 2 + r.right))
+                              left: max(base / 2, e.left),
+                              right: max(base / 2, e.right))
     }
 
     private var hasNotch: Bool { notchSize.width > 0 && notchSize.height > 0 }
@@ -206,14 +266,20 @@ struct IslandView: View {
     }
 
     var body: some View {
+        if let floating { floatingBody(floating) } else { notchBody }
+    }
+
+    private var notchBody: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
                 // Folded: the ears (`IslandEars`). No halo, no glow, no colour
                 // but the recording dot — the owner, 2026-10-15. They are the
                 // "Moe is alive" signal and never need a hover.
-                if !isOpen { earsView }
+                // On a floating capsule the island is the capsule, grown
+                // sideways (`capsuleView`), and working is a ring inside it.
+                if !isOpen { if let capsule { capsuleView(capsule) } else { earsView } }
                 // The white light that runs round the notch while Moe works.
-                if isWorking && !isOpen { workingArc }
+                if isWorking && !isOpen && capsule == nil { workingArc }
                 if !hasNotch && !isOpen { virtualNotch }
                 if isOpen { panel }
             }
@@ -222,16 +288,27 @@ struct IslandView: View {
             .contentShape(hitShape)
             .onHover(perform: onHover)
             .onTapGesture(perform: onTap)
+            // Folded, the island is one thing to VoiceOver: what it is, what
+            // it is showing, and that pressing it opens it.
+            .accessibilityElement(children: isOpen ? .contain : .ignore)
+            .accessibilityLabel(isOpen ? "Memoe panel" : "Memoe")
+            .accessibilityValue(isOpen ? "" : foldedAccessibilityValue)
+            .accessibilityHint(isOpen ? "" : "Opens the Memoe panel")
+            .accessibilityAddTraits(isOpen ? [] : .isButton)
+            .accessibilityAction { if !isOpen { onTap() } }
 
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: conductor.meetingFlash) { _, _ in
             // Someone said your name: the recording dot flashes white twice.
-            withAnimation(.easeInOut(duration: 0.16).repeatCount(4, autoreverses: true)) { flashOn = true }
+            // Reduce Motion: the dot goes white once and comes back, no blink.
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16).repeatCount(4, autoreverses: true)) {
+                flashOn = true
+            }
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 700_000_000)
-                withAnimation(.easeOut(duration: 0.1)) { flashOn = false }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.1)) { flashOn = false }
             }
         }
     }
@@ -277,7 +354,98 @@ struct IslandView: View {
             .clipped()
             .frame(width: width, height: height)
             .offset(x: (trailing ? 1 : -1) * (inner + width / 2))
-            .animation(.spring(response: 0.38, dampingFraction: 0.86), value: reach)
+            .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86), value: reach)
+    }
+
+    // MARK: - The floating capsule (2026-11-12, `CapsuleIsland`)
+
+    /// The folded island on a Mac whose camera floats in a capsule: one black
+    /// capsule over the real one — same top gap, same height, same rounding
+    /// — that grows sideways to hold whatever each side has to show. With
+    /// nothing to show it is the hardware's own rectangle and adds nothing
+    /// to the screen; the strip above it stays lit in every state.
+    private func capsuleView(_ c: NotchGeometry.CapsuleCutout) -> some View {
+        let e = ears
+        let r = reach
+        let frame = CapsuleIsland.folded(c, leftReach: r.left, rightReach: r.right,
+                                         indicatorLive: indicatorLive)
+        return Capsule(style: .circular)
+            .fill(Color.black)
+            .frame(width: frame.width, height: frame.height)
+            .overlay(alignment: .leading) {
+                if let l = e.left, r.left > 0 {
+                    HStack(spacing: IslandEars.gap) { leftEar(l) }
+                        .padding(.leading, IslandEars.outerPad)
+                        .padding(.trailing, IslandEars.innerPad)
+                        .frame(width: r.left, height: frame.height, alignment: .trailing)
+                        .clipped()
+                        .transition(.opacity)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if let rt = e.right, r.right > 0 {
+                    HStack(spacing: IslandEars.gap) { rightEar(rt) }
+                        .padding(.leading, IslandEars.innerPad)
+                        .padding(.trailing, IslandEars.outerPad)
+                        .frame(width: r.right, height: frame.height, alignment: .leading)
+                        .clipped()
+                        .transition(.opacity)
+                }
+            }
+            // The camera stays where it is: the capsule's own centre moves
+            // by half the difference between its two sides.
+            .offset(x: frame.midX, y: frame.minY)
+            .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86), value: frame)
+            .allowsHitTesting(false)
+    }
+
+    /// The working ring: the same crisp white light that runs round a notch
+    /// (`IslandTrail`), run round a small circle inside the capsule. Reduce
+    /// Motion holds it still.
+    private var workingRing: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: snapshotting || reduceMotion)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            let p = snapshotting || reduceMotion ? 0.3
+                : t.truncatingRemainder(dividingBy: IslandTrail.ringLap) / IslandTrail.ringLap
+            ZStack {
+                Circle().stroke(Color.white.opacity(0.22), lineWidth: 1.5)
+                Circle().trim(from: 0, to: 0.3)
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    .rotationEffect(.degrees(p * 360))
+            }
+            .frame(width: IslandEars.glyph - 1.5, height: IslandEars.glyph - 1.5)
+            .frame(width: IslandEars.glyph)
+        }
+    }
+
+    /// What VoiceOver reads for the folded island: the words its two sides
+    /// are showing, or that it is idle.
+    private var foldedAccessibilityValue: String {
+        let e = ears
+        var parts: [String] = []
+        switch e.left {
+        case .levels?: parts.append("Listening")
+        case .speaking?: parts.append("Speaking")
+        case .muted?: parts.append(IslandEars.mutedWord)
+        case .paused?: parts.append(IslandEars.pausedWord)
+        case .stopped?: parts.append(IslandEars.stoppedWord)
+        case .dictating?: parts.append("Dictating")
+        case .recording(let paused, _)?:
+            parts.append(paused ? IslandEars.recordingPausedWord : "Recording a meeting")
+        case .working?: break
+        case nil: break
+        }
+        switch e.right {
+        case .waiting?: parts.append("Something is waiting for you")
+        case .notice(let line)?: parts.append(line)
+        case .driving(let words)?: parts.append(words)
+        case .meeting(let line)?: parts.append(line)
+        case .working(let word, _)?: parts.append(word)
+        // A capsule at rest draws no dot for it; VoiceOver still says it.
+        case .presence?, nil: if capsule != nil, attentionWaiting, e.left == nil { parts.append("Something is waiting for you") }
+        }
+        if parts.isEmpty, isWorking { parts.append("Working") }
+        return parts.isEmpty ? "Idle" : parts.joined(separator: ", ")
     }
 
     private func earText(_ s: String) -> some View {
@@ -292,6 +460,7 @@ struct IslandView: View {
             .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.white.opacity(0.85))
             .frame(width: IslandEars.glyph)
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -301,7 +470,8 @@ struct IslandView: View {
             levelBars(voice: CGFloat(max(0, min(1, conductor.level))))
         case .speaking:
             TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { tl in
-                let t = tl.date.timeIntervalSinceReferenceDate
+                // Reduce Motion: the bars stand still at one pose.
+                let t = reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate
                 EarBars(heights: (0..<IslandEars.barCount).map { i in
                     CGFloat(5 + 3 * sin(t * 3 + Double(i) * 1.3))
                 })
@@ -327,6 +497,8 @@ struct IslandView: View {
                 .frame(width: 6, height: 6)
             earText(paused ? IslandEars.recordingPausedWord : IslandEars.recordingWord)
             if whisper { earGlyph("waveform") }
+        case .working:
+            workingRing
         }
     }
 
@@ -334,7 +506,7 @@ struct IslandView: View {
     private func levelBars(voice: CGFloat) -> some View {
         let shape: [CGFloat] = [0.6, 1, 0.7]
         return EarBars(heights: shape.map { 2 + (IslandEars.barMax - 2) * $0 * voice })
-            .animation(.easeOut(duration: 0.09), value: voice)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: voice)
     }
 
     @ViewBuilder
@@ -358,12 +530,31 @@ struct IslandView: View {
                 .background(Capsule().fill(Color.white.opacity(0.16)))
         case .meeting(let line):
             earText(line)
+        case .working(let word, let ring):
+            if ring { workingRing }
+            earText(word)
         }
     }
 
-    /// "Inbox · 3 waiting" above the list, with the way back to the chat.
+    /// "‹ Chat  Inbox · 3 waiting" above the list. The way back lives here,
+    /// in the header, because the corner icon gives its place to the clock
+    /// while Moe works (the owner, 2026-10-30: "sometimes it doesn't show up").
     private var inboxHeader: some View {
         HStack(spacing: 6) {
+            Button { conductor.closeInbox() } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left").accessibilityHidden(true).font(.system(size: 9, weight: .bold))
+                    Text("Chat").font(.system(size: 11.5, weight: .medium))
+                }
+                .foregroundStyle(Theme.Island.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.white.opacity(0.12)))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Back to the conversation")
+            .accessibilityLabel("Back to the conversation")
             Text("Inbox").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.Island.ink)
             let n = conductor.islandNotices.count
             if n > 0 {
@@ -384,7 +575,7 @@ struct IslandView: View {
     /// out (the owner, 2026-09-29: "how do I exit out?").
     private var replyingBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "arrowshape.turn.up.left.fill")
+            Image(systemName: "arrowshape.turn.up.left.fill").accessibilityHidden(true)
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(Theme.Island.amber)
             Text("Replying to this. Type below and press Return.")
@@ -405,7 +596,7 @@ struct IslandView: View {
     private func returnChip(_ r: Conductor.NoticeReturn) -> some View {
         Button { conductor.returnFromNotice() } label: {
             HStack(spacing: 5) {
-                Image(systemName: "arrow.uturn.backward").font(.system(size: 9, weight: .bold))
+                Image(systemName: "arrow.uturn.backward").accessibilityHidden(true).font(.system(size: 9, weight: .bold))
                 Text("Back to \(r.fromTitle)").font(.system(size: 11)).lineLimit(1)
             }
             .foregroundStyle(Theme.Island.ink3)
@@ -454,12 +645,13 @@ struct IslandView: View {
         let h = max(notchSize.height, 24)
         let inset: CGFloat = 2.5
 
-        return TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { timeline in
+        return TimelineView(.animation(minimumInterval: 1.0 / 45.0, paused: reduceMotion)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             // A still is taken at a fixed point of the lap, with the head on
             // the notch's lower edge: at a random instant it is as likely to
-            // be on the top edge, which is off the screen.
-            let p = snapshotting ? IslandTrail.snapshotPoint
+            // be on the top edge, which is off the screen. Reduce Motion
+            // holds the light there too: lit, and still.
+            let p = snapshotting || reduceMotion ? IslandTrail.snapshotPoint
                 : CGFloat(t.truncatingRemainder(dividingBy: IslandTrail.lap) / IslandTrail.lap)
 
             ZStack {
@@ -513,7 +705,14 @@ struct IslandView: View {
     }
 
     private var panel: some View {
-        let radius: CGFloat = presentation == .expanded ? 20 : 16
+        // A floating capsule opens into a floating card (`CapsuleIsland.card`):
+        // its top edge is the capsule's, all four corners are rounded, and
+        // the strip of screen above it stays lit. The content sits exactly
+        // where it does under a notch; only the black behind it changes.
+        let top = capsule?.topGap ?? 0
+        let radius: CGFloat = capsule != nil ? CapsuleIsland.cardRadius
+            : presentation == .expanded ? 20 : 16
+        let shape = IslandCardShape(cornerRadius: radius, floating: capsule != nil)
         return VStack(spacing: 0) {
             // The notch band. Filled rather than clear now — this is the part
             // that swallows the cutout.
@@ -529,26 +728,29 @@ struct IslandView: View {
         // `.shadow` after `.compositingGroup()` is clipped square to the view.
         .background {
             let size = CGSize(width: contentSize.width,
-                              height: notchSize.height + contentSize.height)
+                              height: notchSize.height - top + contentSize.height)
             ZStack {
-                spilled(IslandPanelShape(cornerRadius: radius),
+                spilled(shape,
                         Color.black.opacity(0.5), size: size,
                         blur: 12, spill: 44)
                     .offset(y: 4)
                 // The panel itself, last, so the shadow is only ever seen
                 // where it spills past this.
-                IslandPanelShape(cornerRadius: radius)
+                shape
                     .fill(Color.black)
             }
+            .padding(.top, top)
         }
         .overlay(
             // Sides and bottom only: a hairline across the top would draw the
-            // seam this design exists to remove.
-            IslandPanelShape(cornerRadius: radius)
+            // seam this design exists to remove. A floating card has no seam
+            // to hide and is outlined all the way round.
+            shape
                 .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-                .offset(y: -2)
+                .padding(.top, top)
+                .offset(y: capsule == nil ? -2 : 0)
         )
-        .animation(.easeInOut(duration: 0.25), value: conductor.mode)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: conductor.mode)
     }
 
     @ViewBuilder
@@ -601,7 +803,9 @@ struct IslandView: View {
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(1)
         }
-        .fixedSize()
+        // On a capsule the word may be shortened to stay on its side of the
+        // camera (`bandWord`); everywhere else it is never squeezed.
+        .fixedSize(horizontal: capsule == nil, vertical: true)
     }
 
     /// The clock sits on the other side of the notch, beside the ⌃: on the
@@ -610,7 +814,37 @@ struct IslandView: View {
     private func bandClock<C: View>(@ViewBuilder _ clock: () -> C) -> some View {
         clock()
             .padding(.trailing, chromeInBand ? 8 + 21 + 8 : 8 + 21 + 8)
-            .offset(y: chromeInBand ? -(notchSize.height + 14) / 2 : 5)
+            .offset(y: chromeInBand ? bandLift(14) : 5)
+    }
+
+    /// The status word in the band, left of the cutout. On a floating capsule
+    /// it is held to its own side of the camera and of the system's
+    /// microphone pill (`CapsuleIsland.header`): a long word ends in "…"
+    /// rather than running under either.
+    @ViewBuilder
+    private func bandWord<W: View>(@ViewBuilder _ word: () -> W) -> some View {
+        if let capsule {
+            let room = CapsuleIsland.header(capsule, cardWidth: contentSize.width, inset: Self.bandInset,
+                                            height: 14, indicatorLive: indicatorLive).left.width
+            word()
+                .frame(maxWidth: room, alignment: .leading)
+                .padding(.leading, Self.bandInset)
+                .offset(y: bandLift(14))
+        } else {
+            word()
+                .padding(.leading, Self.bandInset)
+                .offset(y: bandLift(14))
+        }
+    }
+    static let bandInset: CGFloat = 14
+
+    /// How far up from the top of the content something `height` tall goes
+    /// to sit centred in the black band beside the camera. Under a notch the
+    /// band is the whole cutout's height; on a floating capsule it is the
+    /// capsule's own, which starts below the top of the screen.
+    private func bandLift(_ height: CGFloat) -> CGFloat {
+        let middle = capsule?.midY ?? notchSize.height / 2
+        return -(notchSize.height - middle) - height / 2
     }
 
     /// Moe's latest answer, or its latest system line; nil when your words
@@ -663,6 +897,22 @@ struct IslandView: View {
             driving: driving)
     }
 
+    /// The compact card (2026-11-12, a floating capsule only): Moe is
+    /// working and there is nothing in the conversation to show — the band
+    /// beside the camera already says "Thinking". The ⋯ then sits in the
+    /// band with the clock and the fold, not alone at the right of an empty
+    /// row between the band and the field, and its controls take a row only
+    /// while they are out. Never while muted: the Unmute pill lives on that
+    /// row and must stay in view.
+    static func trayInHeader(_ c: Conductor, chromeInBand: Bool, notch: CGSize) -> Bool {
+        chromeInBand && NotchGeometry.isCapsule(notch) && !c.showingInbox && !c.micMuted
+            && chatRows(c, statusOnce: true).isEmpty && moeText(c).isEmpty
+            && !trayControls(c, driving: false).isEmpty
+    }
+    private var trayInHeader: Bool {
+        capsule != nil && Self.trayInHeader(conductor, chromeInBand: chromeInBand, notch: notchSize)
+    }
+
     private var showsField: Bool { Self.showsField(conductor, draft: draft) }
     static func showsField(_ c: Conductor, draft: IslandDraft) -> Bool {
         Dropdown.showsField(working: busy(c), listening: c.mode == .listening && !c.micMuted,
@@ -670,7 +920,10 @@ struct IslandView: View {
     }
 
     /// Whether the ⋯ has slid its icons out. Folds shut with the panel.
-    @State private var trayOpenByHand = false
+    private var trayOpenByHand: Bool {
+        get { draft.trayOpen }
+        nonmutating set { draft.trayOpen = newValue }
+    }
     @Environment(\.islandPosedTrayOpen) private var posedTrayOpen
     @Environment(\.islandPosedSnoozeOpen) private var posedSnoozeOpen
     private var trayOpen: Bool { trayOpenByHand || posedTrayOpen }
@@ -695,7 +948,7 @@ struct IslandView: View {
                 } else {
                     chatView
                 }
-                if !trayControls.isEmpty { trayRow }
+                if controlsRowShown { trayRow }
                 if showsField { askField }
             }
         }
@@ -705,30 +958,52 @@ struct IslandView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .overlay(alignment: .topLeading) {
             if chromeInBand {
-                statusWord
-                    .padding(.leading, 14)
-                    .offset(y: -(notchSize.height + 14) / 2)
+                bandWord { statusWord }
             }
         }
         .overlay(alignment: .topTrailing) { chrome(stop: false) }
         .overlay(alignment: .topTrailing) {
             if status.clock, let since = conductor.workingSince {
-                bandClock { WorkingClock(since: since, frozen: snapshotting) }
+                bandClock {
+                    HStack(spacing: 6) {
+                        WorkingClock(since: since, frozen: snapshotting)
+                        // Mid-job too: a long job is when the card is most
+                        // in the way. Only where the band has the room.
+                        if NotchCardHeader.fits(buttons: 1 + (trayInHeader ? 1 : 0), extra: 34,
+                                                room: Double(headerRoom)) {
+                            detachButton
+                        }
+                        if trayInHeader { trayToggle }
+                    }
+                    .frame(height: 14)
+                }
             } else {
                 // The inbox, and a new conversation, beside the fold. The
                 // conversation on screen is filed in Chat, not lost
                 // (`Conductor.newConversation`). Not mid-job, where the clock
                 // has this place and a new thread would abandon the work.
+                // And the pop-out, beside the fold (`NotchCardHeader.idle`).
+                let header = NotchCardHeader.idle(
+                    room: Double(headerRoom),
+                    newConversation: !conductor.turns.isEmpty && !busy && !conductor.showingInbox,
+                    tray: trayInHeader)
                 bandClock {
                     HStack(spacing: 6) {
                         InboxIconButton(count: conductor.islandNotices.count,
                                         on: conductor.showingInbox) { conductor.toggleInbox() }
                             .help(conductor.showingInbox ? "Back to the conversation" : "Inbox")
-                        if !conductor.turns.isEmpty, !busy, !conductor.showingInbox {
+                        if header.newConversation {
                             IslandButton(icon: "square.and.pencil") { conductor.newConversation() }
                                 .help("New conversation (this one stays in Chat)")
+                                .accessibilityLabel("New conversation")
                         }
+                        if header.detach { detachButton }
+                        if trayInHeader { trayToggle }
                     }
+                    // On a capsule the buttons are centred on the camera's
+                    // row with the fold beside them; under a notch they sit
+                    // where they always have.
+                    .frame(height: capsule == nil ? nil : 14)
                 }
             }
         }
@@ -736,12 +1011,112 @@ struct IslandView: View {
         .onExitCommand { onClose() }
     }
 
+    // MARK: - The floating window (FloatingChatWindow, 2026-11-13)
+
+    /// How far the window's conversation fades in at its top edge.
+    static let floatingFade: CGFloat = 14
+
+    /// The notch card, out of the notch: its header is a row of its own
+    /// (status, clock, then the inbox, a new conversation, keep on top, back
+    /// to the notch and close), and the conversation takes whatever height
+    /// the window is given. Everything under the header is the notch card's
+    /// own — the cards, the chat rows, the ⋯ tray, the field — drawn by the
+    /// same code from the same Conductor and the same draft.
+    private func floatingBody(_ f: FloatingChrome) -> some View {
+        VStack(alignment: .leading, spacing: Dropdown.Metric.gap) {
+            floatingHeader(f)
+            if conductor.showingInbox {
+                inboxHeader
+                IslandInboxView(conductor: conductor, snoozeOpenFor: posedSnoozeOpen)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                if hasBanners { bannersBlock }
+                if conductor.replyingTo != nil {
+                    replyingBar
+                } else if conductor.showsNoticeReturn, let r = conductor.noticeReturn {
+                    returnChip(r)
+                }
+                if chatRows.isEmpty {
+                    if !moeText.isEmpty { moeLine }
+                    Spacer(minLength: 0)
+                } else {
+                    chatView(fill: true)
+                }
+                if controlsRowShown { trayRow }
+                askField
+            }
+        }
+        .padding(.top, 10)
+        .padding(.bottom, Dropdown.Metric.bottom - 2)
+        .padding(.horizontal, Dropdown.Metric.side - 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.black)
+        .onExitCommand { onClose() }
+        .onChange(of: f.focusRequest) { _, _ in askFocused = true }
+        .onAppear {
+            guard f.focusRequest > 0 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { askFocused = true }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Memoe chat")
+    }
+
+    /// The window's header, which is also its handle: drag it to move the
+    /// window. Right-click for the window's two switches.
+    private func floatingHeader(_ f: FloatingChrome) -> some View {
+        HStack(spacing: 6) {
+            statusWord
+            if status.clock, let since = conductor.workingSince {
+                WorkingClock(since: since, frozen: snapshotting)
+            }
+            Spacer(minLength: 8)
+            InboxIconButton(count: conductor.islandNotices.count,
+                            on: conductor.showingInbox) { conductor.toggleInbox() }
+                .help(conductor.showingInbox ? "Back to the conversation" : "Inbox")
+            if !conductor.turns.isEmpty, !busy, !conductor.showingInbox {
+                IslandButton(icon: "square.and.pencil") { conductor.newConversation() }
+                    .help("New conversation (this one stays in Chat)")
+                    .accessibilityLabel("New conversation")
+            }
+            IslandButton(icon: f.keepOnTop ? "pin.fill" : "pin") { f.onToggleOnTop() }
+                .help(f.keepOnTop ? "Kept on top of every app. Click to let other windows cover it"
+                                  : "Keep it on top of every app")
+                .accessibilityLabel("Keep on top")
+                .accessibilityValue(f.keepOnTop ? "On" : "Off")
+            IslandButton(icon: "pip.enter") { f.onDock() }
+                .help("Put the chat back in the notch (\(FloatingChatWindow.shortcut))")
+                .accessibilityLabel("Put the chat back in the notch")
+            IslandButton(icon: "xmark") { onClose() }
+                .help("Close (esc). The conversation carries on: click the notch to bring it back")
+                .accessibilityLabel("Close the chat window")
+                .accessibilityHint("The conversation carries on")
+        }
+        .frame(height: 24)
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            .onChanged { _ in f.onDragChanged() }
+            .onEnded { _ in f.onDragEnded() })
+        .contextMenu {
+            Button(f.keepOnTop ? "Let Other Windows Cover It" : "Keep on Top") { f.onToggleOnTop() }
+            Button(f.translucent ? "Solid" : "See-Through When Not in Use") { f.onToggleTranslucent() }
+            Divider()
+            Button("Put Back in the Notch") { f.onDock() }
+        }
+    }
+
     // MARK: The conversation, as a chat
 
     /// The whole session, oldest at the top, newest at the bottom, the way
     /// any chat reads (`IslandChat`). While Moe works its step is the newest
     /// row, under the conversation rather than instead of it.
-    static func chatRows(_ c: Conductor) -> [IslandChat.Row] {
+    ///
+    /// `statusOnce`: the card on a floating capsule. Its band already says
+    /// "Thinking" beside the camera, so the bare word is not said again as a
+    /// row directly under it (the owner, 2026-11-12, with a photograph of
+    /// the two stacked). A step is still a row: the band says "Working" and
+    /// the row says what at.
+    static func chatRows(_ c: Conductor, statusOnce: Bool = false,
+                         openSteps: Set<String> = []) -> [IslandChat.Row] {
         var rows: [IslandChat.Row] = []
         for turn in c.turns.suffix(40) {
             let id = turn.id.uuidString
@@ -750,10 +1125,17 @@ struct IslandView: View {
                 rows.append(.you(id: id, text: turn.text, live: false))
             case .moe:
                 if !turn.text.isEmpty { rows.append(.moe(id: id, text: turn.text)) }
+                if !turn.isStreaming, !turn.text.isEmpty, let summary = stepsSummary(turn) {
+                    let sid = id + ":steps"
+                    rows.append(.steps(id: sid, summary: summary,
+                                       lines: openSteps.contains(sid) ? stepLines(turn) : []))
+                }
                 if !turn.noted.isEmpty { rows.append(.noted(id: id + ":noted", count: turn.noted.count)) }
             case .system:
                 if !turn.text.isEmpty { rows.append(.system(id: id, text: turn.text)) }
             }
+            let actions = c.actions(for: turn)
+            if !actions.isEmpty { rows.append(.actions(id: id + ":actions", labels: actions.map(\.label))) }
         }
         if !c.partial.isEmpty { rows.append(.you(id: "partial", text: c.partial, live: true)) }
         // The step while Moe works, unless its answer is already streaming
@@ -764,12 +1146,32 @@ struct IslandView: View {
             let step = c.workingStep.flatMap { $0.isEmpty ? nil : WorkingRow.label(step: $0) }
             // Before the first step, the word. The owner, 2026-09-25: a bare
             // "…" read as nothing, not as Moe thinking.
-            rows.append(.working(label: step ?? "Thinking"))
+            if step != nil || !statusOnce { rows.append(.working(label: step ?? "Thinking")) }
         }
         return rows
     }
 
-    private var chatRows: [IslandChat.Row] { Self.chatRows(conductor) }
+    private var chatRows: [IslandChat.Row] {
+        Self.chatRows(conductor, statusOnce: statusOnce, openSteps: draft.openSteps)
+    }
+
+    /// "3 steps · 48 s · 1 source", the line a finished answer folds what
+    /// it did to; nil when it did nothing worth folding.
+    /// The opened steps on the card, a line each: the steps, the thinking
+    /// in one line, the pages read. One list for drawing and measuring.
+    static func stepLines(_ turn: Turn) -> [String] {
+        turn.tools + [WorkingRow.thinkingLine(turn.thinking)].compactMap { $0 } + turn.links.map(\.label)
+    }
+
+    static func stepsSummary(_ turn: Turn) -> String? {
+        let steps = WorkingRow.summary(steps: turn.tools.count, took: turn.took, thought: !turn.thinking.isEmpty)
+        let sources = turn.links.isEmpty ? nil
+            : turn.links.count == 1 ? "1 source" : "\(turn.links.count) sources"
+        let parts = [steps, sources].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+    /// The band holds the status word, on a floating capsule.
+    private var statusOnce: Bool { capsule != nil && chromeInBand }
 
     /// What the dropdown holds, as `Dropdown` measures it — one builder for
     /// the island's height and for the conversation's frame here, so the
@@ -779,12 +1181,15 @@ struct IslandView: View {
         let banners = NotchIsland.bannerContents(c, accessibility: accessibility, updateShowing: updateShowing,
                                                  width: width, notch: notch)
         return Dropdown.Contents(
-            chat: chatRows(c),
+            chat: chatRows(c, statusOnce: banners.chromeInBand && NotchGeometry.isCapsule(notch),
+                           openSteps: draft.openSteps),
             greeting: moeText(c),
-            controls: !trayControls(c, driving: false).isEmpty,
+            controls: Dropdown.showsControlsRow(hasControls: !trayControls(c, driving: false).isEmpty,
+                                                open: draft.trayOpen, muted: c.micMuted),
             field: showsField(c, draft: draft),
+            // The field's text runs between the + and the ⋯ and send.
             fieldText: Double(ComposerEditor.height(draft.text, size: 13, lineHeight: 17, maxLines: 4,
-                                                    width: Dropdown.Metric.width - 36 - 70,
+                                                    width: Dropdown.Metric.width - 36 - 102,
                                                     wraps: IslandTextMeasure.wraps)),
             banners: ConversationPanel.banners(banners, width: width, wraps: IslandTextMeasure.wraps),
             statusInBand: banners.chromeInBand)
@@ -796,53 +1201,110 @@ struct IslandView: View {
         let contents = Self.dropdownContents(conductor, draft: draft, accessibility: accessibilityProblem,
                                              updateShowing: updateNoticeShowing,
                                              width: Double(contentSize.width), notch: notchSize)
-        return CGFloat(Dropdown.layout(contents, wraps: IslandTextMeasure.wraps).chat)
+        return CGFloat(Dropdown.layout(contents, wraps: IslandTextMeasure.wraps,
+                                       maximum: Dropdown.maximum(expanded: presentation == .expanded)).chat)
+    }
+
+    /// The conversation is taller than its frame, so some of it is scrolled
+    /// out of the top.
+    private func chatOverflows(_ rows: [IslandChat.Row]) -> Bool {
+        CGFloat(IslandChat.height(rows, wraps: IslandTextMeasure.wraps, cap: .infinity)) > chatFrameHeight + 0.5
     }
 
     /// Messages whose More was pressed, by row id.
     @State private var expandedRows: Set<String> = []
 
-    private var chatView: some View {
+    private var chatView: some View { chatView(fill: false) }
+
+    /// `fill`: the floating window, where the conversation takes whatever
+    /// height the window has and scrolls inside it, rather than the measured
+    /// frame the notch card is laid out to.
+    private func chatView(fill: Bool) -> some View {
         let rows = chatRows
         return ScrollViewReader { proxy in
             IslandScrollBox {
-                VStack(alignment: .leading, spacing: IslandChat.gap) {
-                    ForEach(rows, id: \.id) { row in
-                        chatRow(row)
-                            // Every message copies, and the whole
-                            // conversation does too (2026-09-29).
-                            .contextMenu {
-                                if let text = Self.rowText(row) {
-                                    Button("Copy message") { Transcript.copy(text) }
+                // The end marker sits outside the rows' stack. Inside it, the
+                // stack's spacing put ten points between the last row and
+                // the marker, so the content was ten points taller than the
+                // frame `IslandChat.height` gives it, and scrolled to its end
+                // it lost those ten points off the top: the first row of a
+                // short conversation was drawn with its top cut away (the
+                // owner's photograph, 2026-11-12: "Thinking" with no tops).
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: IslandChat.gap) {
+                        ForEach(rows, id: \.id) { row in
+                            chatRow(row)
+                                // Every message copies, and the whole
+                                // conversation does too (2026-09-29).
+                                .contextMenu {
+                                    if let text = Self.rowText(row) {
+                                        Button("Copy message") { Transcript.copy(text) }
+                                    }
+                                    Button("Copy conversation") {
+                                        Transcript.copy(Transcript.plain(conductor.turns))
+                                    }
                                 }
-                                Button("Copy conversation") {
-                                    Transcript.copy(Transcript.plain(conductor.turns))
-                                }
-                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Color.clear.frame(height: 0).id("chatEnd")
                 }
+                // In the window the fade is always on, so the first row starts
+                // below it: scrolled to the top nothing is faded, scrolled
+                // down the fade says there is more above.
+                .padding(.top, fill ? Self.floatingFade : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .scrollIndicators(.never)
-            .frame(height: chatFrameHeight)
+            // The system's own scroller, shown while scrolling: with none, a
+            // long answer's start sat above the frame with nothing to say so.
+            .scrollIndicators(.automatic)
+            .frame(height: fill ? nil : chatFrameHeight)
+            .frame(maxHeight: fill ? .infinity : nil)
             // A line scrolled half out of the top reads as two rows colliding;
             // a short fade says "there is more up there", as the meeting
-            // transcript does.
-            .mask(
-                LinearGradient(stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: .black, location: min(0.08, 14 / max(chatFrameHeight, 1))),
-                    .init(color: .black, location: 1),
-                ], startPoint: .top, endPoint: .bottom)
-            )
-            .onAppear { proxy.scrollTo("chatEnd", anchor: .bottom) }
-            .onChange(of: conductor.turns.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("chatEnd", anchor: .bottom) }
+            // transcript does. Only when there is: over a conversation that
+            // fits, the fade took the top off its first row.
+            .mask {
+                if fill {
+                    VStack(spacing: 0) {
+                        LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                            .frame(height: Self.floatingFade)
+                        Color.black
+                    }
+                } else {
+                    LinearGradient(stops: [
+                        .init(color: chatOverflows(rows) ? .clear : .black, location: 0),
+                        .init(color: .black, location: min(0.08, 14 / max(chatFrameHeight, 1))),
+                        .init(color: .black, location: 1),
+                    ], startPoint: .top, endPoint: .bottom)
+                }
             }
-            .onChange(of: conductor.turns.last?.text) { _, _ in proxy.scrollTo("chatEnd", anchor: .bottom) }
+            .onAppear { scrollToNewest(proxy) }
+            .onChange(of: conductor.turns.count) { _, _ in
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo("chatEnd", anchor: .bottom) }
+            }
+            // An answer as it grows: its start pinned to the top once it is
+            // taller than the frame, so it reads down rather than each new
+            // word pulling the reader to the bottom. A short one cannot
+            // scroll that far, so it still ends up pinned to the newest.
+            .onChange(of: conductor.turns.last?.text) { _, _ in scrollToNewest(proxy) }
             .onChange(of: conductor.partial) { _, _ in proxy.scrollTo("chatEnd", anchor: .bottom) }
             .onChange(of: conductor.workingStep) { _, _ in proxy.scrollTo("chatEnd", anchor: .bottom) }
+        }
+    }
+
+    /// The newest answer, from its start: pinned to the top once it is
+    /// taller than the frame, so it reads down rather than each new word
+    /// pulling the reader to the bottom, and opening the panel on a long one
+    /// lands on its first line (the owner, 2026-10-30: "I can't see the
+    /// whole thing"). A short one cannot scroll that far, so it still ends
+    /// pinned to the newest row. Anything else that is newest — your words,
+    /// a step — is the bottom.
+    private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        if conductor.partial.isEmpty, let last = conductor.turns.last, last.role == .moe, !last.text.isEmpty {
+            proxy.scrollTo(last.id.uuidString, anchor: .top)
+        } else {
+            proxy.scrollTo("chatEnd", anchor: .bottom)
         }
     }
 
@@ -867,21 +1329,40 @@ struct IslandView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         case .moe(_, let text):
-            VStack(alignment: .leading, spacing: IslandChat.blockGap) {
-                ForEach(Array(ReplyBlocks.parse(text).enumerated()), id: \.offset) { _, block in
-                    islandBlock(block)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // The renderer the Chat page uses, in the island's style. A table
+            // too wide for the notch card folds to a line that opens the
+            // window; the floating window has the room and draws it.
+            ReplyView(text, style: .island(openWindow: floating == nil ? handOff : nil))
         case .queued(let text):
             VStack(alignment: .trailing, spacing: 2) {
                 youBubble(text, live: false).opacity(0.55)
-                Text("Sends when Moe finishes")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .frame(height: IslandChat.more - 2)
+                HStack(spacing: 8) {
+                    Text("Sends when Moe finishes")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.4))
+                    Button { conductor.cancelQueued() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(width: 18, height: IslandChat.more - 2)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Don't send it")
+                    .accessibilityLabel("Don't send it")
+                }
+                .frame(height: IslandChat.more - 2)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
+        case .steps(let id, let summary, let lines):
+            stepsFoot(id: id, summary: summary, open: !lines.isEmpty)
+        case .actions(let id, _):
+            if let turn = conductor.turns.first(where: { $0.id.uuidString + ":actions" == id }) {
+                ReplyActionRow(actions: conductor.actions(for: turn), style: .island) { action in
+                    perform(action, on: turn)
+                }
+                .frame(height: IslandChat.actionsLine)
+            }
         case .system(_, let text):
             Text(text)
                 .font(.system(size: IslandChat.systemSize))
@@ -907,35 +1388,68 @@ struct IslandView: View {
         }
     }
 
-    /// One block of an answer. A quote (usually a draft Moe wrote for you:
-    /// an email, a message) is a card of its own rather than a column of ">"
-    /// (the owner, 2026-09-25).
+    /// What Moe did, folded under its answer: "3 steps · 48 s ›". A click
+    /// opens the steps and the pages it read, and folds them again.
     @ViewBuilder
-    private func islandBlock(_ block: ReplyBlock) -> some View {
-        switch block {
-        case .prose(let s):
-            answerText(s)
-        case .heading(let s):
-            answerText(s).fontWeight(.semibold)
-        case .quote(let s), .code(let s):
-            // Wraps to its height: without this a card at the top of the
-            // chat was cut to one line with an ellipsis.
-            answerText(s, size: IslandChat.moeSize - 0.5)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(IslandChat.boxPad)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.07)))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.10), lineWidth: 1))
+    private func stepsFoot(id: String, summary: String, open: Bool) -> some View {
+        let turn = conductor.turns.first { $0.id.uuidString + ":steps" == id }
+        VStack(alignment: .leading, spacing: IslandChat.stepsGap) {
+            Button {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
+                    if open { draft.openSteps.remove(id) } else { draft.openSteps.insert(id) }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(summary)
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                }
+                .font(.system(size: 11.5))
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(height: IslandChat.stepsLine)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(open ? "Fold what Moe did" : "What Moe did")
+            .accessibilityLabel("What Moe did: \(summary)")
+            .accessibilityValue(open ? "Shown" : "Folded")
+            if open, let turn {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(turn.tools.enumerated()), id: \.offset) { _, step in
+                        Text(step)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .lineLimit(1)
+                            .frame(height: IslandChat.stepLine)
+                    }
+                    if let line = WorkingRow.thinkingLine(turn.thinking) {
+                        Text(line)
+                            .font(.system(size: 11.5).italic())
+                            .foregroundStyle(.white.opacity(0.42))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(height: IslandChat.stepLine)
+                            .help("Moe's thinking — the whole of it is in the Memoe window")
+                    }
+                    ForEach(turn.links, id: \.url) { link in
+                        if let url = URL(string: link.url) {
+                            Link(destination: url) {
+                                Text(link.label).underline()
+                            }
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineLimit(1)
+                            .frame(height: IslandChat.stepLine)
+                            .help(link.url)
+                        }
+                    }
+                }
+                .padding(.leading, 2)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func answerText(_ s: String, size: CGFloat = IslandChat.moeSize) -> Text {
-        Text(Self.linked(s))
-            .font(.system(size: size))
-            .foregroundColor(.white.opacity(0.96))
-    }
 
     private func moreButton(_ id: String) -> some View {
         Button("More") { expandedRows.insert(id) }
@@ -951,14 +1465,16 @@ struct IslandView: View {
     /// a green edge, like the light at the notch.
     private func youBubble(_ text: String, live: Bool) -> some View {
         let m = Dropdown.Metric.self
+        let lines = TextDirection.preparedLines(text)
         return HStack(spacing: 0) {
             Spacer(minLength: 0)
-            Text(text)
+            Text(lines.text)
                 .font(.system(size: m.youSize))
                 .foregroundStyle(.white.opacity(live ? 0.9 : 0.78))
                 .lineSpacing(m.youLineHeight - 16)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+                .reads(lines.direction)
                 .padding(.horizontal, m.youPadH)
                 .padding(.vertical, m.youPadV)
                 .background(
@@ -973,8 +1489,17 @@ struct IslandView: View {
                                            style: .continuous)
                         .stroke(live ? Theme.Island.listening.opacity(0.35) : .clear, lineWidth: 1)
                 )
-                .frame(maxWidth: CGFloat(Dropdown.youTextWidth + m.youPadH * 2), alignment: .trailing)
+                .frame(maxWidth: bubbleWidth, alignment: .trailing)
         }
+    }
+
+    /// Your bubble's widest: four-fifths of the notch card, or of the
+    /// floating window as it is widened.
+    private var bubbleWidth: CGFloat {
+        let m = Dropdown.Metric.self
+        let card = CGFloat(Dropdown.youTextWidth + m.youPadH * 2)
+        guard floating != nil else { return card }
+        return max(card, (contentSize.width - CGFloat(m.side) * 2) * CGFloat(m.youWidthShare))
     }
 
     /// The step, shimmering while Moe works; the answer when it lands. Long
@@ -1013,14 +1538,25 @@ struct IslandView: View {
             Spacer(minLength: 0)
             if trayOpen {
                 ForEach(Array(controls.enumerated()), id: \.offset) { _, c in trayIcon(c) }
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
             }
-            TrayButton(icon: "ellipsis", style: trayOpen ? .lit : .quiet) {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { trayOpenByHand.toggle() }
-            }
-            .help(trayOpen ? "Hide the controls" : "Controls")
         }
         .frame(height: Dropdown.Metric.controls)
+    }
+
+    /// The controls' row: only while slid out, or muted (`Dropdown.showsControlsRow`).
+    private var controlsRowShown: Bool {
+        Dropdown.showsControlsRow(hasControls: !trayControls.isEmpty, open: trayOpen,
+                                  muted: conductor.micMuted)
+    }
+
+    /// The ⋯ that slides the controls out and back.
+    private var trayToggle: some View {
+        TrayButton(icon: "ellipsis", style: trayOpen ? .lit : .quiet) {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.8)) { trayOpenByHand.toggle() }
+        }
+        .help(trayOpen ? "Hide the controls" : "Controls")
+        .accessibilityLabel(trayOpen ? "Hide the controls" : "Show the controls")
     }
 
     /// The Unmute pill was pressed. Only a panel opened by hand unmutes; on
@@ -1047,32 +1583,41 @@ struct IslandView: View {
                 else { conductor.setMicMuted(true, from: "island's mute glyph (\(presentation))") }
             }
             .help(muted ? ConversationControls.unmuteHelp : ConversationControls.muteHelp)
+            .accessibilityLabel(muted ? "Unmute the microphone" : "Mute the microphone")
         case .updates(let quiet):
             TrayButton(icon: quiet ? "speaker.slash.fill" : "speaker.wave.2.fill", style: quiet ? .lit : .plain) {
                 conductor.toggleWorkSilently()
             }
             .help(quiet ? "Working quietly: Moe will only say the answer. Click to hear progress again."
                         : "Moe says what it's doing as it goes. Click to keep it quiet until the answer.")
+            .accessibilityLabel("Spoken progress")
+            .accessibilityValue(quiet ? "Off" : "On")
         case .captions(let on):
             TrayButton(icon: "captions.bubble.fill", style: on ? .lit : .plain) { conductor.toggleTranscript() }
                 .help(on ? "Live transcript on: the panel opens as you talk and as Moe answers. Click to turn it off."
                          : "Turn on the live transcript: the panel opens as you talk and as Moe answers.")
+                .accessibilityLabel("Live transcript")
+                .accessibilityValue(on ? "On" : "Off")
         case .startOver:
             TrayButton(icon: "arrow.counterclockwise", style: .plain) { conductor.restartReply() }
                 .help("Say it again from the top")
+                .accessibilityLabel("Say it again from the top")
         case .pause, .resume:
             TrayButton(icon: c == .pause ? "pause.fill" : "play.fill", style: .plain) {
                 if let id = conductor.voicedTurnID { conductor.playPauseReply(id) }
             }
             .help(c == .pause ? "Pause (a tap of the talk key does the same)" : "Carry on from where it paused")
+            .accessibilityLabel(c == .pause ? "Pause the reply" : "Carry on with the reply")
         case .readAloud:
             TrayButton(icon: "play.fill", style: .plain) {
                 if let a = lastAnswer { conductor.playPauseReply(a.id) }
             }
             .help("Read this aloud")
+            .accessibilityLabel("Read this aloud")
         case .openChat:
-            TrayButton(icon: "macwindow", style: .plain) { onOpenChat() }
-                .help("Open the whole conversation in the Memoe window")
+            TrayButton(icon: "macwindow", style: .plain) { handOff() }
+                .help("Open the whole conversation in the Memoe window (⌘J)")
+                .accessibilityLabel("Open the conversation in the Memoe window")
         case .copy:
             TrayButton(icon: "doc.on.doc", style: .plain) {
                 guard let a = lastAnswer else { return }
@@ -1080,10 +1625,12 @@ struct IslandView: View {
                 NSPasteboard.general.setString(a.text, forType: .string)
             }
             .help("Copy the answer")
+            .accessibilityLabel("Copy the answer")
         case .stop(let driving):
             TrayButton(icon: "stop.fill", style: driving ? .driving : .plain) { conductor.stopEverything() }
                 .help(driving ? IslandOverride.stopLabel(screen: conductor.drivingApp != nil)
                               : "Stop: Moe drops this job")
+                .accessibilityLabel("Stop")
         }
     }
 
@@ -1107,18 +1654,42 @@ struct IslandView: View {
                     ComposerEditor(text: $draft.text, placeholder: placeholder,
                                    size: 13, lineHeight: 17, maxLines: 4,
                                    ink: .white, placeholderInk: .white.opacity(0.38),
-                                   focus: $askFocused, onSubmit: sendAsked)
+                                   focus: $askFocused,
+                                   attach: attach ? { draft.attachments.append(contentsOf: $0) } : nil,
+                                   onSubmit: sendAsked)
                 }
-                Button(action: sendAsked) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(draft.inProgress ? .black : .white.opacity(0.35))
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(draft.inProgress ? Color.white : Color.white.opacity(0.08)))
+                // The ⋯ beside send, in the conversation's field: it used to
+                // sit alone on a row of its own between the answer and the
+                // field (deep dive §2.10). On the compact card it is in the
+                // band (`trayInHeader`).
+                if attach, !trayInHeader, !trayControls.isEmpty { trayToggle }
+                switch attach ? ComposerAction.of(working: busy, hasDraft: draft.inProgress)
+                              : .send(enabled: draft.inProgress) {
+                case .stop:
+                    Button { conductor.stopEverything() } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.black)
+                            .frame(width: 26, height: 26)
+                            .background(Circle().fill(Color.white))
+                    }
+                    .buttonStyle(.plain)
+                    .help(islandOverride == .driving ? IslandOverride.stopLabel(screen: conductor.drivingApp != nil)
+                                                     : "Stop: Moe drops this job (esc)")
+                    .accessibilityLabel("Stop")
+                case .send(let enabled):
+                    Button(action: sendAsked) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(enabled ? .black : .white.opacity(0.35))
+                            .frame(width: 26, height: 26)
+                            .background(Circle().fill(enabled ? Color.white : Color.white.opacity(0.08)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!enabled)
+                    .help(busy ? "Send when Moe finishes" : "Send")
+                    .accessibilityLabel(busy ? "Send when Moe finishes" : "Send")
                 }
-                .buttonStyle(.plain)
-                .disabled(!draft.inProgress)
-                .help("Send")
             }
             .padding(.leading, attach ? 6 : 14)
             .padding(.trailing, 4)
@@ -1188,7 +1759,7 @@ struct IslandView: View {
         let inline = actions.count == 1
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: inline ? .center : .firstTextBaseline, spacing: 8) {
-                Image(systemName: icon).font(.system(size: 10)).foregroundStyle(tint)
+                Image(systemName: icon).accessibilityHidden(true).font(.system(size: 10)).foregroundStyle(tint)
                 Text(text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.9))
                     .lineLimit(Int(ConversationPanel.Metric.offerLimit))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1258,10 +1829,10 @@ struct IslandView: View {
     /// no ✕: it goes when the capture does, and its ✕ used to do nothing.
     private func noticeBar(_ text: String, icon: String, tint: Color, dismiss: (() -> Void)?) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 10)).foregroundStyle(tint)
+            Image(systemName: icon).accessibilityHidden(true).font(.system(size: 10)).foregroundStyle(tint)
             Text(text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.9)).lineLimit(2)
             Spacer(minLength: 4)
-            if let dismiss { IslandButton(icon: "xmark", action: dismiss) }
+            if let dismiss { IslandButton(icon: "xmark", action: dismiss).accessibilityLabel("Dismiss") }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -1279,7 +1850,7 @@ struct IslandView: View {
             meetingPage = page
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: icon).font(.system(size: 9, weight: .bold))
+                Image(systemName: icon).accessibilityHidden(true).font(.system(size: 9, weight: .bold))
                 Text(label).font(.system(size: 10.5, weight: .semibold))
             }
             .foregroundStyle(.white.opacity(on ? 1 : 0.6))
@@ -1289,7 +1860,7 @@ struct IslandView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .animation(.easeOut(duration: 0.15), value: on)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: on)
     }
 
     /// The meeting's word beside the notch: a red dot and "Recording" with
@@ -1306,7 +1877,7 @@ struct IslandView: View {
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(1)
         }
-        .fixedSize()
+        .fixedSize(horizontal: capsule == nil, vertical: true)
     }
 
     private var meetingTray: [MeetingTray.Control] {
@@ -1328,9 +1899,10 @@ struct IslandView: View {
             Spacer(minLength: 0)
             ForEach(Array(shown.enumerated()), id: \.offset) { _, c in meetingTrayIcon(c) }
             TrayButton(icon: "ellipsis", style: trayOpen ? .lit : .quiet) {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { trayOpenByHand.toggle() }
+                withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.8)) { trayOpenByHand.toggle() }
             }
             .help(trayOpen ? "Hide the controls" : "Mark, off the record, screenshot, stop")
+            .accessibilityLabel(trayOpen ? "Hide the meeting controls" : "Show the meeting controls")
         }
         .frame(height: Dropdown.Metric.controls)
     }
@@ -1341,19 +1913,25 @@ struct IslandView: View {
         case .mark:
             TrayButton(icon: "bookmark.fill", style: .plain) { conductor.addMeetingBookmark() }
                 .help("Mark this moment in the notes")
+                .accessibilityLabel("Mark this moment in the notes")
         case .offRecord(let on):
             TrayButton(icon: "pause.fill", style: on ? .lit : .plain) { conductor.toggleMeetingPause() }
                 .help(on ? "Off the record: nothing is being written down. Click to go back on."
                          : "Go off the record. Nothing is written down until you come back.")
+                .accessibilityLabel("Off the record")
+                .accessibilityValue(on ? "On" : "Off")
         case .screenshot:
             TrayButton(icon: "camera.fill", style: .plain) { conductor.captureScreenshot(trigger: .user) }
                 .help("Take a screenshot (⌃⌥S)")
+                .accessibilityLabel("Take a screenshot")
         case .clip(let on):
             TrayButton(icon: "record.circle", style: on ? .lit : .plain) { conductor.toggleMeetingClip(trigger: .user) }
                 .help(on ? "Recording the screen. Click to stop (⌃⌥R)." : "Record the screen (⌃⌥R)")
+                .accessibilityLabel(on ? "Stop recording the screen" : "Record the screen")
         case .stop:
             TrayButton(icon: "stop.fill", style: .red) { conductor.stopMeeting() }
                 .help("Stop and write the notes")
+                .accessibilityLabel("Stop the meeting and write the notes")
         }
     }
 
@@ -1508,10 +2086,10 @@ struct IslandView: View {
                 )
                 .onAppear { proxy.scrollTo("mend", anchor: .bottom) }
                 .onChange(of: conductor.meetingTimeline.count) { _, _ in
-                    withAnimation { proxy.scrollTo("mend", anchor: .bottom) }
+                    withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo("mend", anchor: .bottom) }
                 }
                 .onChange(of: conductor.turns.count) { _, _ in
-                    withAnimation { proxy.scrollTo("mend", anchor: .bottom) }
+                    withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo("mend", anchor: .bottom) }
                 }
                 // A reply streams into a turn that already exists, so the
                 // count never moves while the answer grows.
@@ -1544,9 +2122,7 @@ struct IslandView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .overlay(alignment: .topLeading) {
             if chromeInBand {
-                meetingStatusWord
-                    .padding(.leading, 14)
-                    .offset(y: -(notchSize.height + 14) / 2)
+                bandWord { meetingStatusWord }
             }
         }
         .overlay(alignment: .topTrailing) { chrome(stop: false) }
@@ -1570,7 +2146,34 @@ struct IslandView: View {
         }
         // Give it up on the way out, so a keystroke aimed at the call window
         // is not swallowed by a field that is no longer on screen.
-        .onDisappear { askFocused = false }
+        .onDisappear { askFocused = false; handOffKey.stop() }
+        .background(KeyWatchAnchor(watch: handOffKey))
+        .onAppear { handOffKey.start(key: "j") { handOff() } }
+    }
+
+    /// A button under the newest turn (`ReplyActions`). Edit puts the
+    /// draft in this box to change and send back.
+    private func perform(_ action: ReplyAction, on turn: Turn) {
+        switch action {
+        case .send, .accept: conductor.answer(action)
+        case .retry: conductor.retry(failed: turn.id)
+        case .copy: Transcript.copy(ReplyActions.draft(in: turn.text) ?? turn.text)
+        case .edit:
+            if let d = ReplyActions.draft(in: turn.text) {
+                draft.text = ReplyActionRow.editPrefix + d
+                askFocused = true
+            }
+        }
+    }
+
+    /// To the Chat page, with what was waiting in the box (the owner's
+    /// answer 1): the words and files go with the conversation, not lost
+    /// in a card that has closed.
+    private func handOff() {
+        conductor.handOffDraft(text: draft.text, attachments: draft.attachments)
+        draft.text = ""
+        draft.attachments = []
+        onOpenChat()
     }
 
     /// A transcript speaker in the gutter's own register.
@@ -1635,6 +2238,7 @@ struct IslandView: View {
                     IslandButton(icon: "xmark") { conductor.dismissMeetingOutcome(); onClose() }
                         .opacity(0.4)
                         .help("Dismiss")
+                        .accessibilityLabel("Dismiss")
                 }
                 Text(conductor.meetingOutcome?.record.notes?.title ?? "Notes ready")
                     .font(.system(size: 17, weight: .semibold))
@@ -1739,7 +2343,7 @@ struct IslandView: View {
             // Words, then, in the panel's own small-caps.
             if notesLayout.overflows {
                 HStack(spacing: 4) {
-                    Image(systemName: "chevron.down")
+                    Image(systemName: "chevron.down").accessibilityHidden(true)
                         .font(.system(size: 7, weight: .bold))
                     Text("SCROLL FOR THE REST")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
@@ -1757,7 +2361,7 @@ struct IslandView: View {
             if let audioNote = meetingAudioNote {
                 Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5)
                 HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: audioNote.kept ? "waveform.circle.fill" : "waveform.slash")
+                    Image(systemName: audioNote.kept ? "waveform.circle.fill" : "waveform.slash").accessibilityHidden(true)
                         .font(.system(size: 10))
                         .foregroundStyle(audioNote.kept ? Self.amber : .white.opacity(0.5))
                     Text(audioNote.text)
@@ -1836,6 +2440,7 @@ struct IslandView: View {
         HStack(spacing: 11) {
             Image(systemName: conductor.dictation == .typing
                   ? "text.cursor" : "keyboard")
+                .accessibilityHidden(true)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.85))
                 .frame(width: 20)
@@ -1860,6 +2465,7 @@ struct IslandView: View {
                 // escape was a key nobody is told about. Throwing away what
                 // you just said has to be a visible button.
                 IslandButton(icon: "xmark") { conductor.cancelDictationFromIsland() }
+                    .accessibilityLabel("Cancel dictation")
             }
         }
         .padding(.top, 14)
@@ -1928,8 +2534,30 @@ struct IslandView: View {
     /// talk-key row used to have no drop at all and sat under the ⌃.
     private static let chromeDrop = CGFloat(ConversationPanel.Metric.chromeDrop)
 
+    /// The floating window has no band and no chrome drop: its header is a
+    /// row of its own, so everything under it starts at the top, as it does
+    /// under a notch.
     private var chromeInBand: Bool {
-        ConversationPanel.chromeFitsInBand(panelWidth: Double(contentSize.width), notch: notchSize)
+        floating != nil
+            || ConversationPanel.chromeFitsInBand(panelWidth: Double(contentSize.width), notch: notchSize)
+    }
+
+    /// Points between the cutout (or the system's microphone pill beside a
+    /// capsule) and the card's edge, for the header's buttons. Unbounded
+    /// when the header has a row of its own.
+    private var headerRoom: CGFloat {
+        guard chromeInBand, floating == nil else { return .infinity }
+        let half = contentSize.width / 2
+        if let capsule { return half - CapsuleIsland.inner(capsule, indicatorLive: indicatorLive).right }
+        return half - notchSize.width / 2
+    }
+
+    /// Out of the notch, into a window of its own (`FloatingChatWindow`).
+    private var detachButton: some View {
+        IslandButton(icon: "pip.exit") { onDetach() }
+            .help("Pop out the chat (\(FloatingChatWindow.shortcut)): a window you can move, resize and keep over any app")
+            .accessibilityLabel("Pop out the chat")
+            .accessibilityHint("Opens the conversation in a window you can move and resize")
     }
 
     private var hasBanners: Bool {
@@ -2112,15 +2740,17 @@ struct IslandView: View {
             if stop {
                 IslandButton(icon: "xmark") { conductor.cancelEverything() }
                     .help("Stop — close the microphone and drop this turn")
+                    .accessibilityLabel("Stop")
             }
             IslandButton(icon: "chevron.up") { onClose() }
                 .help("Fold the panel away (esc)")
+                .accessibilityLabel("Fold the panel away")
         }
         .padding(.top, chromeInBand ? 0 : 8)
         .padding(.trailing, 8)
         // Up into the band beside the notch, centred in it: the overlay's
         // top is the content's top, which is the band's bottom.
-        .offset(y: chromeInBand ? -(notchSize.height + 21) / 2 : 0)
+        .offset(y: chromeInBand ? bandLift(21) : 0)
     }
 }
 
@@ -2129,6 +2759,9 @@ struct IslandView: View {
 struct WorkingClock: View {
     let since: Date
     var frozen = false
+    /// The island's dim white; the Chat page passes its own ink.
+    var ink: Color = .white.opacity(0.35)
+    var size: CGFloat = 11
 
     var body: some View {
         if frozen {
@@ -2140,18 +2773,21 @@ struct WorkingClock: View {
 
     private func label(_ now: Date) -> some View {
         Text(WorkingRow.elapsed(now.timeIntervalSince(since)))
-            .font(.system(size: 11).monospacedDigit())
-            .foregroundStyle(.white.opacity(0.35))
+            .font(.system(size: size).monospacedDigit())
+            .foregroundStyle(ink)
     }
 }
 
 /// The dot on the working row, breathing.
 struct Breathing: ViewModifier {
     @State private var dim = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         content
             .opacity(dim ? 0.35 : 1)
             .onAppear {
+                // Reduce Motion: the dot stays lit and still.
+                guard !reduceMotion else { return }
                 withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { dim = true }
             }
     }
@@ -2176,7 +2812,7 @@ struct IslandPill: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Image(systemName: icon).font(.system(size: 9, weight: .bold))
+                Image(systemName: icon).accessibilityHidden(true).font(.system(size: 9, weight: .bold))
                 Text(label).font(.system(size: 10.5, weight: .semibold))
             }
             .foregroundStyle(tint == nil ? .white.opacity(hovering ? 1 : 0.85)
@@ -2198,7 +2834,7 @@ struct IslandPill: View {
 struct MutedTab: View {
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "mic.slash.fill").font(.system(size: 9, weight: .bold))
+            Image(systemName: "mic.slash.fill").accessibilityHidden(true).font(.system(size: 9, weight: .bold))
             Text(ConversationControls.mutedPill)
                 .font(.system(size: 10.5, weight: .semibold))
                 .lineLimit(1)
@@ -2223,7 +2859,7 @@ struct UnmutePill: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Image(systemName: "mic.slash.fill").font(.system(size: 9, weight: .bold))
+                Image(systemName: "mic.slash.fill").accessibilityHidden(true).font(.system(size: 9, weight: .bold))
                 Text(ConversationControls.unmuteButton)
                     .font(.system(size: 10.5, weight: .semibold))
                     .lineLimit(1)
@@ -2275,6 +2911,8 @@ struct AnswerButton: View {
 
 /// A small round button for the island's controls.
 struct IslandButton: View {
+    /// How far past its drawn edge a header button answers a click.
+    static let reach: CGFloat = (24 - 21) / 2
     let icon: String
     var prominent: Bool = false
     let action: () -> Void
@@ -2291,6 +2929,11 @@ struct IslandButton: View {
                     Circle().fill(prominent ? Theme.Island.recording.opacity(0.9)
                                             : Color.white.opacity(hovering ? 0.2 : 0.11))
                 )
+                // Drawn at 21 so the header's arithmetic is unchanged
+                // (`NotchCardHeader`); pressable across 24, the smallest
+                // target anywhere in chat (deep dive §2.10). The 6 between
+                // buttons leaves the wider circles apart.
+                .contentShape(Circle().inset(by: -IslandButton.reach))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -2382,14 +3025,39 @@ struct EarBars: View {
     }
 }
 
+/// The open panel's outline: the slab hanging from the top edge of the screen
+/// (`IslandPanelShape`, unchanged), or — on a Mac whose camera floats in a
+/// capsule — a card that does not reach the top edge at all, so all four of
+/// its corners are rounded.
+struct IslandCardShape: Shape {
+    var cornerRadius: CGFloat
+    var floating = false
+
+    func path(in rect: CGRect) -> Path {
+        guard floating else { return IslandPanelShape(cornerRadius: cornerRadius).path(in: rect) }
+        let r = min(cornerRadius, min(rect.width, rect.height) / 2)
+        return Path(roundedRect: rect, cornerRadius: r, style: .continuous)
+    }
+}
+
 /// The folded island's hit area: the notch plus whichever ears are out,
 /// measured from the frame's centre; or the whole frame when open.
 struct IslandHitShape: Shape {
     var full: Bool
     var left: CGFloat = 0
     var right: CGFloat = 0
+    /// A floating card: the frame's top `topInset` points are not the
+    /// island's, except a column `stem` wide in the middle.
+    var topInset: CGFloat = 0
+    var stem: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
+        if full, topInset > 0 {
+            var p = Path(CGRect(x: rect.minX, y: rect.minY + topInset,
+                                width: rect.width, height: max(rect.height - topInset, 0)))
+            p.addRect(CGRect(x: rect.midX - stem / 2, y: rect.minY, width: stem, height: topInset))
+            return p
+        }
         if full { return Path(rect) }
         return Path(CGRect(x: rect.midX - left, y: rect.minY, width: left + right, height: rect.height))
     }

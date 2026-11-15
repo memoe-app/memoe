@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MoeComponents
 import MoeMeeting
 
 // Meeting-mode spike for Moe (PRODUCT.md §4.2).
@@ -223,6 +224,8 @@ func transcribe(outDir: String) async throws {
     // Diarization on the system stream only — "them" may be several people.
     t = Date()
     let diarizer = DiarizerManager(config: DiarizerConfig(minSpeechDuration: 0.5))
+    try await ComponentFetcher.shared.ensure(ComponentCatalog.speakerDiarization,
+                                             in: ComponentCatalog.modelsRoot)
     diarizer.initialize(models: try await DiarizerModels.downloadIfNeeded())
     print(String(format: "Diarizer models loaded in %.1f s", Date().timeIntervalSince(t)))
     t = Date()

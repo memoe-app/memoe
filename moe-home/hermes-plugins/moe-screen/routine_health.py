@@ -35,6 +35,17 @@ at its second failure in a row (one is weather); a run that was blocked, or
 whose message reached nobody, at once. Then nothing more until the job works
 again — no seventh-failure reminder, no card per retry.
 
+**Since 2026-11-12 Moe's own jobs are not simply dropped.** "Dropped and
+logged" is right for the island — a card about Moe's own machinery has no
+one-tap answer, so by the inbox rule it stays quiet — but the log was the
+only record, and nobody reads a log: the proactive pass, the learning pass
+or the calendar heads-up could be dead for weeks and nothing a person looks
+at would say so. ``record_own_jobs`` keeps, per job, when it last ran, when
+it last worked and when it last failed, in ``proactive/job-health.json``;
+Settings › Running in the background reads that file and says one quiet line
+per job ("Last ran 2 h ago." / "Has not worked since Tuesday."). Still not a
+card, and still never a sentence on the island.
+
 Stdlib only, never raises.
 """
 
@@ -289,6 +300,88 @@ def _write_told(path, told):
         pass
 
 
+# ── Moe's own jobs: when each last ran, worked and failed ──────────────────
+
+#: Beside the told-episodes file, in the proactive dir. The app reads it.
+HEALTH_FILENAME = "job-health.json"
+
+
+def _stamp_utc(when):
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _as_utc(iso):
+    """Hermes's local-offset timestamp as a UTC ``…Z`` stamp, or ""."""
+    when = _when(iso)
+    if when is None:
+        return ""
+    if when.tzinfo is None:
+        when = when.astimezone()          # Hermes writes local time
+    return _stamp_utc(when)
+
+
+def health_path(directory):
+    return os.path.join(directory, HEALTH_FILENAME)
+
+
+def read_health(directory):
+    """``{"checked": …, "jobs": {name: {…}}}``; empty when there is none."""
+    data = _read_told(health_path(directory))
+    jobs = data.get("jobs")
+    return {"checked": str(data.get("checked") or ""),
+            "jobs": jobs if isinstance(jobs, dict) else {}}
+
+
+def record_own_jobs(jobs, directory, now=None):
+    """Write what Hermes's records say about Moe's own jobs, keeping what
+    they cannot say. Returns the health dict written (or what was read, if
+    nothing could be written). Never raises.
+
+    Hermes keeps only the LAST run's status, so "when did this last work?"
+    is lost at the first failure — which is exactly when it is wanted. This
+    carries ``last_success`` and ``last_failure`` forward from one look to
+    the next. A job that is gone from Hermes's records is dropped here too.
+
+    ``checked`` is stamped every time, whatever was found: the job that
+    calls this is itself one of Moe's own, and a file nobody has refreshed
+    is how the reader tells that the watcher has stopped."""
+    try:
+        now = now or datetime.now(timezone.utc)
+        before = read_health(directory)["jobs"]
+        out = {}
+        for job in jobs or []:
+            if not isinstance(job, dict) or is_persons_job(job):
+                continue
+            name = str(job.get("name") or "").strip()
+            if not name:
+                continue
+            was = before.get(name) if isinstance(before.get(name), dict) else {}
+            status = str(job.get("last_status") or "").strip().lower()
+            ran = _as_utc(job.get("last_run_at"))
+            entry = {
+                "id": str(job.get("id") or ""),
+                "enabled": bool(job.get("enabled", True)),
+                "last_run": ran,
+                "last_status": status,
+                "next_run": _as_utc(job.get("next_run_at")),
+                "last_success": str(was.get("last_success") or ""),
+                "last_failure": str(was.get("last_failure") or ""),
+            }
+            if ran and status:
+                # A run that errored or was blocked did not do its job. Any
+                # other finished status did — including one whose message
+                # went astray, which is a delivery fault, not a dead job.
+                key = "last_failure" if status in _FAILED + _BLOCKED else "last_success"
+                if ran > entry[key]:
+                    entry[key] = ran
+            out[name] = entry
+        health = {"checked": _stamp_utc(now), "jobs": out}
+        _write_told(health_path(directory), health)
+        return health
+    except Exception:  # noqa: BLE001 — a record that could not be kept is not a failed tick
+        return {"checked": "", "jobs": {}}
+
+
 def read_jobs(hermes_home):
     """Hermes's job records, read-only. [] when the file cannot be read."""
     try:
@@ -311,6 +404,10 @@ def tell_failures(jobs, deliver, now=None):
     told_now = []
     try:
         now = now or datetime.now(timezone.utc)
+        # Moe's own jobs get no card, by the inbox rule; they get a record
+        # the Settings pane reads. Here because this is the one place that
+        # already holds Hermes's job records every five minutes.
+        record_own_jobs(jobs, deliver.open_dir(), now=now)
         path = os.path.join(deliver.open_dir(), TOLD_FILENAME)
         told = _read_told(path)
         changed = False

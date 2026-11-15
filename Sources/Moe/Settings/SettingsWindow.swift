@@ -24,6 +24,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         /// The page that was asked for when it now lives as a tab inside
         /// another (`landing`), so the host opens on that tab.
         @Published var sub: MainWindow.Section?
+        /// A row's title to light up and scroll to — Moe opening Settings on
+        /// a setting (`SettingsBridge`). Cleared a few seconds later.
+        @Published var spotlight: String?
+        private var spotlightClear: Task<Void, Never>?
         init(_ section: MainWindow.Section) {
             self.section = Self.landing(section)
             self.sub = section
@@ -32,6 +36,18 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         func go(_ section: MainWindow.Section) {
             sub = section
             self.section = Self.landing(section)
+        }
+
+        @MainActor
+        func light(_ title: String?, for seconds: Double = 6) {
+            spotlight = title
+            spotlightClear?.cancel()
+            guard title != nil else { return }
+            spotlightClear = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.spotlight = nil
+            }
         }
 
         /// Pages folded into others. Replies is part of Settings › Voice
@@ -65,15 +81,18 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
 
     /// Open Settings, on `section`. Defaults to the brain because that is the
     /// one thing a new install must set before anything else works.
-    static func show(conductor: Conductor, at section: MainWindow.Section = .brain) {
+    static func show(conductor: Conductor, at section: MainWindow.Section = .brain,
+                     spotlight: String? = nil) {
         if let existing = shared {
             existing.selection.go(section)
+            existing.selection.light(spotlight)
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
         let controller = SettingsWindow(conductor: conductor, at: section)
         controller.open()
+        controller.selection.light(spotlight)
         shared = controller
     }
 
@@ -144,6 +163,7 @@ struct SettingsView: View {
                     .font(.system(size: 12, weight: .medium))
                     .frame(width: 16)
                     .foregroundStyle(on ? Theme.accentDeep : Theme.ink3)
+                    .accessibilityHidden(true)
                 Text(label(item))
                     .font(Theme.Typo.ui(13, weight: on ? .semibold : .regular))
                     .foregroundStyle(on ? Theme.ink : Theme.ink2)
@@ -159,6 +179,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         .animation(Theme.Motion.easeOut, value: on)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     /// Settings names things by what they do, not by what they are inside.
@@ -190,7 +211,28 @@ struct SettingsView: View {
         }
     }
 
-    private var content: some View {
+    /// Not private: `--settings-snapshot` measures the least height this
+    /// asks for (`SettingsSnapshot.minimumSize`). The window's own
+    /// `minHeight` frame answers that question with its own number whatever
+    /// is inside it, so the window cannot be asked.
+    var content: some View {
+        ScrollViewReader { proxy in
+            pane
+                .environment(\.settingSpotlight, selection.spotlight)
+                .onChange(of: selection.spotlight) { _, title in
+                    guard let title else { return }
+                    // After a "More" or a tab the row is in has opened.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        withAnimation(Theme.Motion.easeOut) {
+                            proxy.scrollTo(SettingSpotlight.anchor(title), anchor: .center)
+                        }
+                    }
+                }
+        }
+    }
+
+    private var pane: some View {
         Group {
             switch selection.section {
             case .brain, .skills: BrainPane(conductor: conductor, start: selection.sub)
@@ -214,5 +256,48 @@ struct SettingsView: View {
         )
         .padding(Theme.Space.snug)
         .padding(.leading, 0)
+    }
+}
+
+// MARK: - Spotlight
+
+/// The row Moe opened Settings on (`SettingsBridge`): rows compare their own
+/// title with it, light up, and carry an id the window scrolls to. A pane
+/// that hides rows behind "More" or a tab opens the one it is in.
+enum SettingSpotlight {
+    static func anchor(_ title: String) -> String { "setting:" + title }
+
+    /// Where the lit row sits under its page — its catalogue entry's `under`.
+    @MainActor
+    static func under(_ title: String?) -> String? {
+        guard let title else { return nil }
+        return SettingsCatalogue.all.first { $0.title == title }?.under
+    }
+}
+
+private struct SettingSpotlightKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    var settingSpotlight: String? {
+        get { self[SettingSpotlightKey.self] }
+        set { self[SettingSpotlightKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Lights a settings row when Moe opened Settings on it, and gives it the
+    /// id the window scrolls to.
+    func settingSpotlight(_ title: String, lit: Bool) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(Theme.selected)
+                    .padding(.horizontal, -8)
+                    .opacity(lit ? 1 : 0)
+                    .animation(Theme.Motion.easeOut, value: lit)
+            )
+            .id(SettingSpotlight.anchor(title))
     }
 }

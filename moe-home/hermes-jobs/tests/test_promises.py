@@ -319,7 +319,7 @@ class WatchTest(Base):
         self.P.watch(self.answering({}), now=at("2026-10-01 09:30"))
         sid = self.P.situation_for("prm_a")
         due = self.s.load_situations()[sid]
-        self.s.set_prepared(sid, {"offer": "x", "for": due["material"]})
+        self.s.set_prepared(sid, {"offer": "x", "for": due["material"]}, at("2026-10-01 09:30"))
         self.s.set_offered(sid, due["material"], at("2026-10-01 09:31"))
         self.P.watch(self.answering({}), now=at("2026-10-02 09:30"))
         broken = self.s.load_situations()[sid]

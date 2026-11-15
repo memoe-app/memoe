@@ -159,8 +159,9 @@ class Registration(unittest.TestCase):
             # The JSON Schema lives under `parameters` — that is the shape
             # Hermes publishes; see PublishedShape below. A connector's
             # status/pull/crawl take nothing required; `report_problem`
-            # (not a connector) needs its title and body.
-            if name != plugin.REPORT_TOOL:
+            # (not a connector) needs its title and body, and `connect_service`
+            # the service to connect.
+            if name not in (plugin.REPORT_TOOL, plugin.CONNECT_TOOL):
                 self.assertEqual(tool["schema"]["parameters"]["required"], [])
 
 
@@ -230,11 +231,25 @@ class Handlers(unittest.TestCase):
 
 
 class RealCatalogue(unittest.TestCase):
-    """Against whatever is actually installed on this Mac."""
+    """Against the installed catalogue the plugin reads, or else the one this
+    checkout ships.
+
+    This asked whether ~/.moe/connectors existed and then let the plugin read
+    $MOE_HOME/connectors. test-all.sh points MOE_HOME at an empty sandbox, so
+    on this Mac the guard said "there is a catalogue", the plugin found none,
+    and the test failed on the harness (2026-11-14). The guard now asks the
+    plugin's own question, and a home without a catalogue is given the
+    shipped one, so the test always registers a real catalogue and never
+    passes by skipping."""
 
     def test_it_registers_the_catalogue_not_a_curated_list(self):
-        if not os.path.isdir(os.path.expanduser("~/.moe/connectors")):
-            self.skipTest("no ~/.moe/connectors on this machine")
+        if not os.path.isdir(plugin.connectors_dir()):
+            shipped = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            self.assertTrue(os.path.isdir(os.path.join(shipped, "connectors")), shipped)
+            old = os.environ.get("MOE_HOME")
+            os.environ["MOE_HOME"] = shipped
+            self.addCleanup(lambda: os.environ.__setitem__("MOE_HOME", old) if old is not None
+                            else os.environ.pop("MOE_HOME", None))
         ctx = FakeContext()
         plugin.register(ctx)
         self.assertGreater(len(ctx.connectors), 10)

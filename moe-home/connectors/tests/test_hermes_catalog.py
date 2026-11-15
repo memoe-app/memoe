@@ -49,10 +49,12 @@ class TestComposioEntries(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["HERMES_HOME"] = self.tmp.name
         self._snapshot = cat.COMPOSIO_SNAPSHOT
+        self._ranking = cat.COMPOSIO_RANKING
         self._run = cat.subprocess.run
 
     def tearDown(self):
         cat.COMPOSIO_SNAPSHOT = self._snapshot
+        cat.COMPOSIO_RANKING = self._ranking
         cat.subprocess.run = self._run
         os.environ.pop("HERMES_HOME", None)
         self.tmp.cleanup()
@@ -87,7 +89,17 @@ class TestComposioEntries(unittest.TestCase):
         self.assertEqual([e["name"] for e in entries[:2]], ["gmail", "notion"], "live rows come first")
         self.assertEqual(len([e for e in entries if e["name"] == "gmail"]), 1, "one Gmail, not one per source")
 
+    # The catalogue has a THIRD source since composio-ranking.json shipped:
+    # composio_entries() ends by listing what the ranking names and neither
+    # the live list nor the snapshot has (`"composio-ranking"`, hermes-catalog.py).
+    # These two cases removed the snapshot only, so "the live list alone" came
+    # back as 181 ranked rows and both failed. They take the ranking away too,
+    # and the case after them says what the ranking adds when it is there.
+    def _no_ranking(self):
+        cat.COMPOSIO_RANKING = os.path.join(self.tmp.name, "no-ranking.json")
+
     def test_no_snapshot_means_the_live_list_alone_and_no_error(self):
+        self._no_ranking()
         cat.COMPOSIO_SNAPSHOT = os.path.join(self.tmp.name, "missing.json")
         self.assertEqual(cat.composio_entries(), [])
         self._config_with_composio()
@@ -99,7 +111,15 @@ class TestComposioEntries(unittest.TestCase):
         with open(broken, "w") as fh:
             fh.write("{not json")
         cat.COMPOSIO_SNAPSHOT = broken
+        self._no_ranking()
         self.assertEqual(cat.composio_entries(), [])
+
+    def test_with_no_snapshot_the_ranking_still_lists_what_it_names(self):
+        cat.COMPOSIO_SNAPSHOT = os.path.join(self.tmp.name, "missing.json")
+        entries = cat.composio_entries()
+        self.assertTrue(entries, "the shipped ranking lists nothing")
+        self.assertEqual({e["source"] for e in entries}, {"composio-ranking"})
+        self.assertEqual(len({e["name"] for e in entries}), len(entries), "a service listed twice")
 
     def test_the_snapshot_carries_no_session_and_no_key(self):
         with open(cat.COMPOSIO_SNAPSHOT, encoding="utf-8") as fh:

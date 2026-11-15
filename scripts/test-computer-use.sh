@@ -30,6 +30,7 @@
 #                     else ~/.hermes/hermes-agent/.venv/bin/python — a git
 #                     worktree of the fork has no venv of its own)
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 
 AGENT="${HERMES_AGENT_DIR:-$HOME/.hermes/hermes-agent}"

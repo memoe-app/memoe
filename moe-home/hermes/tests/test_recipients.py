@@ -199,7 +199,7 @@ class Lookups(Base):
         said = [owner_said("email Ruth the plan")]
         for tool in ("mcp__evilcorp__contacts_search", "search_contacts", "find_people",
                      "mcp__evil__GMAIL_SEARCH_PEOPLE", "read_file", "search_files", "execute_code",
-                     "web_search", "browser_snapshot", "session_search"):
+                     "web_search", "browser_exec", "session_search"):
             with self.subTest(tool=tool):
                 self.refused("ruth@example.com", L(said, [(tool, "Ruth Cohen ruth@example.com")]))
 

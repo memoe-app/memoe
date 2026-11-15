@@ -112,7 +112,7 @@ struct ImportMemorySheet: View {
         let source = from.rawValue
         Task {
             let r = await ScriptRunner.offMain {
-                ScriptRunner.run("/usr/bin/python3", [script, source], stdin: text, timeout: 900)
+                ScriptRunner.run(BrainSetup.python(), [script, source], stdin: text, timeout: 900)
             }
             working = false
             let answer = Self.parse(r.output)

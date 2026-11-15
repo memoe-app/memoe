@@ -1662,7 +1662,13 @@ class RegisterTest(unittest.TestCase):
         self.assertEqual(entry["env_enablement_fn"](), {"home_channel": {"chat_id": "screen", "name": "This Mac"}})
         self.assertTrue(entry["check_fn"]())
         self.assertTrue(entry["is_connected"](None))
-        self.assertEqual(sorted(ctx.hooks), ["deliver_detached_completion", "pre_gateway_dispatch", "pre_tool_call"])
+        try:  # D4: the claim seam, wherever the Hermes in reach declares it
+            from hermes_cli.plugins import VALID_HOOKS
+            seam = ["pre_cron_run"] if "pre_cron_run" in VALID_HOOKS else []
+        except Exception:  # noqa: BLE001
+            seam = []
+        self.assertEqual(sorted(ctx.hooks), sorted(["deliver_detached_completion", "pre_gateway_dispatch",
+                                                    "pre_tool_call", "transform_tool_result"] + seam))
         # Three on the inbound seam: the nudge context, the ask the Mac left
         # open (AWAY-HANDOFF slice 3), and — last, so it prepends over both —
         # the Now line (ticket #9). NOT post_llm_call: it never fires under
@@ -4282,6 +4288,111 @@ def load_routine_health():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+class OwnJobHealthTest(unittest.TestCase):
+    """Moe's own jobs get no card when they fail (the inbox rule: no one-tap
+    answer, so quiet) — and until 2026-11-12 they got nothing else either:
+    dropped and logged, so the proactive pass could be dead for weeks unseen.
+    The record Settings › Running in the background reads is kept here."""
+
+    NOW = datetime(2026, 11, 12, 14, 0, tzinfo=timezone.utc)
+    PROACTIVE = {"id": "aa11", "name": "moe-proactive", "enabled": True,
+                 "last_status": "ok", "last_run_at": "2026-11-12T08:30:00-05:00",
+                 "next_run_at": "2026-11-12T09:00:00-05:00"}
+    LEARN = {"id": "bb22", "name": "moe-learn-deep", "enabled": True,
+             "last_status": "error", "last_error": "Traceback…", "failure_streak": 9,
+             "last_run_at": "2026-11-12T03:00:00-05:00"}
+    PERSONS = {"id": "cc33", "name": "X daily growth", "origin": {"platform": "api_server"},
+               "last_status": "ok", "last_run_at": "2026-11-12T09:00:00-05:00"}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="moe-screen-test-")
+        os.environ["MOE_HOME"] = self.tmp
+        self.d = load_deliver()
+        self.rh = load_routine_health()
+        self.dir = self.d.open_dir()
+
+    def tearDown(self):
+        os.environ.pop("MOE_HOME", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def on_disk(self):
+        with open(os.path.join(self.dir, "job-health.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_a_run_that_worked_is_recorded_in_utc(self):
+        self.rh.record_own_jobs([dict(self.PROACTIVE)], self.dir, now=self.NOW)
+        h = self.on_disk()
+        self.assertEqual(h["checked"], "2026-11-12T14:00:00Z")
+        j = h["jobs"]["moe-proactive"]
+        self.assertEqual(j["last_run"], "2026-11-12T13:30:00Z")
+        self.assertEqual(j["last_success"], "2026-11-12T13:30:00Z")
+        self.assertEqual(j["last_failure"], "")
+        self.assertEqual(j["next_run"], "2026-11-12T14:00:00Z")
+        self.assertTrue(j["enabled"])
+
+    def test_the_last_success_survives_the_failures_after_it(self):
+        """Hermes keeps only the last status. When the job starts failing,
+        "when did it last work" is the thing worth knowing, and it is gone
+        from Hermes's record — so it has to have been kept here."""
+        worked = dict(self.LEARN, last_status="ok", last_run_at="2026-11-10T03:00:00-05:00")
+        self.rh.record_own_jobs([worked], self.dir, now=self.NOW)
+        self.rh.record_own_jobs([dict(self.LEARN, last_run_at="2026-11-11T03:00:00-05:00")],
+                                self.dir, now=self.NOW)
+        self.rh.record_own_jobs([dict(self.LEARN)], self.dir, now=self.NOW)
+        j = self.on_disk()["jobs"]["moe-learn-deep"]
+        self.assertEqual(j["last_success"], "2026-11-10T08:00:00Z")
+        self.assertEqual(j["last_failure"], "2026-11-12T08:00:00Z")
+        self.assertEqual(j["last_status"], "error")
+
+    def test_blocked_is_a_failure_and_a_lost_message_is_not(self):
+        blocked = dict(self.PROACTIVE, last_status="blocked")
+        astray = dict(self.LEARN, last_status="delivery_failed")
+        jobs = self.rh.record_own_jobs([blocked, astray], self.dir, now=self.NOW)["jobs"]
+        self.assertEqual(jobs["moe-proactive"]["last_failure"], "2026-11-12T13:30:00Z")
+        self.assertEqual(jobs["moe-proactive"]["last_success"], "")
+        self.assertEqual(jobs["moe-learn-deep"]["last_success"], "2026-11-12T08:00:00Z")
+        self.assertEqual(jobs["moe-learn-deep"]["last_failure"], "")
+
+    def test_the_persons_own_jobs_are_not_in_it_and_a_removed_job_leaves(self):
+        self.rh.record_own_jobs([dict(self.PROACTIVE), dict(self.PERSONS), dict(self.LEARN)],
+                                self.dir, now=self.NOW)
+        self.assertEqual(sorted(self.on_disk()["jobs"]), ["moe-learn-deep", "moe-proactive"])
+        self.rh.record_own_jobs([dict(self.PROACTIVE)], self.dir, now=self.NOW)
+        self.assertEqual(sorted(self.on_disk()["jobs"]), ["moe-proactive"])
+
+    def test_a_job_that_has_never_run_is_listed_with_nothing_claimed(self):
+        never = {"id": "dd44", "name": "moe-weekly-digest", "enabled": True}
+        j = self.rh.record_own_jobs([never], self.dir, now=self.NOW)["jobs"]["moe-weekly-digest"]
+        self.assertEqual((j["last_run"], j["last_success"], j["last_failure"]), ("", "", ""))
+
+    def test_checked_is_stamped_even_when_there_is_nothing_to_record(self):
+        """The watcher is one of the watched: a stale ``checked`` is how the
+        pane knows the look itself has stopped."""
+        self.rh.record_own_jobs([], self.dir, now=self.NOW)
+        self.assertEqual(self.on_disk(), {"checked": "2026-11-12T14:00:00Z", "jobs": {}})
+
+    def test_garbage_in_never_raises(self):
+        for jobs in (None, [None, 3, {"name": ""}, {"name": "moe-x", "last_run_at": "not a date",
+                                                    "last_status": 7}]):
+            self.rh.record_own_jobs(jobs, self.dir, now=self.NOW)
+        self.assertEqual(self.on_disk()["jobs"]["moe-x"]["last_run"], "")
+        with open(os.path.join(self.dir, "job-health.json"), "w") as f:
+            f.write("{ not json")
+        self.rh.record_own_jobs([dict(self.PROACTIVE)], self.dir, now=self.NOW)
+        self.assertIn("moe-proactive", self.on_disk()["jobs"])
+
+    def test_the_five_minute_tick_keeps_the_record_and_raises_no_card(self):
+        """Through ``tell_failures``, the call ``moe-loop-check`` makes: Moe's
+        own failing job is recorded, and there is still no inbox card — a card
+        needs a one-tap answer, and this has none."""
+        self.rh.tell_failures([dict(self.LEARN), dict(self.PROACTIVE)], self.d, now=self.NOW)
+        self.assertEqual(self.on_disk()["jobs"]["moe-learn-deep"]["last_failure"],
+                         "2026-11-12T08:00:00Z")
+        inbox = os.path.join(self.tmp, "inbox")
+        self.assertEqual([f for f in (os.listdir(inbox) if os.path.isdir(inbox) else [])
+                          if f.endswith(".json")], [])
 
 
 class JobFailureTellTest(unittest.TestCase):

@@ -21,7 +21,9 @@ import SwiftUI
 //   settings    — the deep link that opens that exact pane
 //
 // plus `needsRelaunch`, because macOS reads some grants only at launch and a
-// person who is not told that concludes the permission did not work.
+// person who is not told that concludes the permission did not work. It is
+// true only where that is so: a "Quit and reopen" button on a grant that
+// already took effect teaches people to restart for nothing.
 
 struct PermissionGuide: Identifiable, Sendable {
     let id: String
@@ -89,11 +91,14 @@ struct PermissionGuide: Identifiable, Sendable {
         ifDeclined: Features.dictation
             ? "Moe keeps working. Holding the key won't start it — click the little pill under the notch instead — and dictated text is copied to your clipboard for you to paste with Command-V."
             : "Moe keeps working. Holding the key won't start it — click the little pill under the notch instead.",
-        steps: "System Settings → Privacy & Security → Accessibility → switch Memoe on. If Memoe isn't in the list, click +, then pick Memoe from your Applications folder. Then quit Memoe and open it again.",
+        steps: "System Settings → Privacy & Security → Accessibility → switch Memoe on. If Memoe isn't in the list, click +, then pick Memoe from your Applications folder. It works the moment the switch is on — nothing to restart.",
         settings: pane + "Privacy_Accessibility",
-        // The key watcher is armed once, at launch (AppDelegate.registerHotKey):
-        // granting this to a running Moe changes nothing until it restarts.
-        needsRelaunch: true,
+        // No relaunch: `AccessibilityWatch` sees the grant within two
+        // seconds and arms the key there and then (`onGranted`). This said
+        // true until 2026-11-12, from when the watcher was armed once at
+        // launch, and Settings › Permissions went on offering "Quit and
+        // reopen" for a grant that had already taken effect.
+        needsRelaunch: false,
         codes: [],
         probe: .accessibilityTrusted)
 
@@ -425,7 +430,7 @@ struct PermissionExplainer: View {
                     }
                 }
                 if guide.needsRelaunch {
-                    PaneButton(title: "Quit and reopen Moe") { Relaunch.now() }
+                    PaneButton(title: "Quit and reopen \(BuildInfo.hostAppName)") { Relaunch.now() }
                 }
             }
             .padding(.top, Theme.Space.tight)

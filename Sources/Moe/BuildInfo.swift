@@ -1,6 +1,7 @@
 import Foundation
 import MoeAudio
 import MoeBrain
+import MoeComponents
 
 /// `Moe --build-info` — what is actually in this binary, and what is beside it.
 ///
@@ -66,12 +67,25 @@ enum BuildInfo {
 
         // MARK: The models beside it
         print("\nModels")
+        // Which of the three builds this is (docs/SLIM-DOWNLOAD.md §7), read
+        // from the same Info.plist key the app acts on. The release scripts
+        // read the key; this line is for a person asking an installed app.
+        let onDemand = OnDemandModels.mode
+        let onDemandFolders = Set(ComponentCatalog.all.map(\.folder))
+        print("  on demand        \(onDemand.rawValue)  — \(onDemandMeaning(onDemand))")
         if let dir = Models.bundleModels {
             print("  in this bundle   \(dir.path)")
             for (name, _) in Models.bundled {
                 let path = dir.appendingPathComponent(name, isDirectory: true)
                 if FileManager.default.fileExists(atPath: path.path) {
                     print("  ✓ \(pad(name, 26))\(size(of: path))")
+                    if onDemand == .on, onDemandFolders.contains(name) {
+                        problems.append("\(name) is in the bundle of a build that says it is fetched on demand")
+                    }
+                } else if onDemand == .on, onDemandFolders.contains(name) {
+                    // Left out on purpose. Not a fault — and said, so that
+                    // "Complete." is never read as "carries all eight".
+                    print("  · \(pad(name, 26))on demand — fetched when first needed")
                 } else {
                     print("  ✗ \(pad(name, 26))MISSING")
                     problems.append("\(name) is not in the bundle")
@@ -108,6 +122,14 @@ enum BuildInfo {
         print("\nIncomplete — \(problems.count) problem(s):")
         for p in problems { print("  • \(p)") }
         return 1
+    }
+
+    private static func onDemandMeaning(_ mode: OnDemandMode) -> String {
+        switch mode {
+        case .off:     return "every model is in the app"
+        case .prepare: return "every model is in the app; two are copied out at launch, for the slim release"
+        case .on:      return "two models are fetched when first needed, not carried"
+        }
     }
 
     // MARK: - Running each thing rather than claiming it
@@ -157,7 +179,32 @@ enum BuildInfo {
         guard let commit = Bundle.main.infoDictionary?["MoeCommit"] as? String, !commit.isEmpty else {
             return "\(number) (no commit stamped — built before build.sh recorded one)"
         }
-        return "\(number), commit \(commit)"
+        return "\(number), commit \(commit)" + (isUnreleasedBuild(Bundle.main.infoDictionary) ? ", unreleased build" : "")
+    }
+
+    // MARK: - Release or not
+
+    /// True when build.sh stamped this bundle as NOT the published build.
+    ///
+    /// The version cannot say: `0.3.24 (31)` is the release's name, and every
+    /// build made from main until the next release carries it too. build.sh
+    /// writes `MoeReleaseBuild` — "1" only under publish-release.sh — so the
+    /// app can tell a person, and a problem report, which of the two it is.
+    /// A bundle with no such key (built before the stamp existed, or run
+    /// straight from .build) claims nothing: absent is "cannot tell", and
+    /// only an explicit "0" is "unreleased".
+    static func isUnreleasedBuild(_ info: [String: Any]?) -> Bool {
+        (info?["MoeReleaseBuild"] as? String) == "0"
+    }
+
+    /// The line Settings › About shows under the version on a build that is
+    /// not the published one, or nil on a release.
+    static func unreleasedNote(_ info: [String: Any]?) -> String? {
+        guard isUnreleasedBuild(info) else { return nil }
+        guard let commit = info?["MoeCommit"] as? String, !commit.isEmpty else {
+            return "Not the published release: built on this Mac."
+        }
+        return "Not the published release: built from commit \(commit)."
     }
 
     /// "up to date" or "behind by N changes", in words, or nil when the

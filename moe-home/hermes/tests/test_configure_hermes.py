@@ -50,6 +50,59 @@ def _load_configure():
 
 configure = _load_configure()
 
+# ── a `hermes` that downloads nothing ────────────────────────────────────────
+# configure-hermes.py shells out to the `hermes` CLI for two things: five
+# `hermes skills install <id> --yes` on any home that lacks them, and
+# `hermes computer-use install`. Every test here starts from an empty home,
+# so every run_script() paid for five real CLI start-ups, and the Skills Hub
+# reaches the network. Measured 2026-11-12: 202 tests in 1096 seconds — 21 of
+# the 47 minutes the whole shell gate took — and one failure that was the
+# network, not the code.
+#
+# MOE_HERMES_BIN is the seam the script already has for this (hermes_cli()).
+# It is set for the whole module, by assignment rather than setdefault: a
+# value inherited from somebody's shell must not put a real binary back. A
+# test that wants its own stub still passes hermes_bin= and wins.
+#
+# The stub does what the hub does that the script can observe: it makes
+# $HERMES_HOME/skills/<category…>/<name>/ — install_skills() treats the
+# DIRECTORY as the proof, never the exit code — and exits 0 either way, as
+# the real CLI does when it fails. MOE_STUB_SKILLS_FAIL=1 is that failure.
+_STUB_DIR = tempfile.mkdtemp(prefix="moe-configure-hermes-stub-")
+HERMES_STUB = os.path.join(_STUB_DIR, "hermes")
+HERMES_STUB_CALLS = os.path.join(_STUB_DIR, "calls")
+with open(HERMES_STUB, "w") as _f:
+    _f.write("""#!/bin/bash
+printf '%%s\\t%%s\\n' "${HERMES_HOME:-}" "$*" >> "%s"
+if [ "${1:-} ${2:-}" = "skills install" ]; then
+  id="${3:-}"
+  if [ "${MOE_STUB_SKILLS_FAIL:-}" = 1 ] || [ -z "${HERMES_HOME:-}" ]; then
+    echo "Error: Could not fetch '$id' from any source."
+    exit 0
+  fi
+  dest="$HERMES_HOME/skills/${id#*/}"
+  mkdir -p "$dest" && printf '# a stub skill\\n' > "$dest/SKILL.md"
+  echo "Installed $id"
+fi
+exit 0
+""" % HERMES_STUB_CALLS)
+os.chmod(HERMES_STUB, 0o755)
+os.environ["MOE_HERMES_BIN"] = HERMES_STUB
+
+
+def tearDownModule():
+    shutil.rmtree(_STUB_DIR, ignore_errors=True)
+
+
+def hermes_stub_calls(hermes_home):
+    """What the stub `hermes` was asked to do for this scratch home."""
+    try:
+        with open(HERMES_STUB_CALLS, encoding="utf-8") as f:
+            return [line.rstrip("\n").split("\t", 1)[1] for line in f
+                    if line.split("\t", 1)[0] == hermes_home]
+    except OSError:
+        return []
+
 # Answers like /usr/bin/security for the two lookups the script makes.
 SECURITY_STUB = """#!/bin/bash
 # $FAKE_TG: telegram token to return for -s moe-telegram-bot -w
@@ -202,6 +255,50 @@ class ConfigureFixture(unittest.TestCase):
     def mode(self, path):
         return stat.S_IMODE(os.stat(path).st_mode)
 
+
+
+class TheHermesCliIsAStub(ConfigureFixture):
+    """The skills step, which nothing here covered — and the proof that no
+    test in this module reaches the real `hermes` CLI or the network."""
+
+    IDS = list(configure.MOE_SKILLS)
+
+    def test_a_fresh_home_installs_each_skill_once_through_the_cli(self):
+        code, out = self.run_script()
+        self.assertEqual(code, 0, out)
+        calls = [c for c in hermes_stub_calls(self.hermes_home) if c.startswith("skills install ")]
+        self.assertEqual(calls, ["skills install %s --yes" % i for i in self.IDS])
+        for ident in self.IDS:
+            parts = ident.split("/")
+            self.assertTrue(os.path.isdir(os.path.join(self.hermes_home, "skills", *parts[1:])), ident)
+            self.assertIn("skill %s" % parts[-1], out)
+
+    def test_a_second_run_asks_the_cli_for_nothing(self):
+        """`a steady state costs nothing`: the directory is checked first."""
+        self.run_script()
+        before = len(hermes_stub_calls(self.hermes_home))
+        code, out = self.run_script()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(hermes_stub_calls(self.hermes_home)), before, "the CLI was called again")
+
+    def test_a_skill_the_hub_cannot_fetch_is_a_note_not_a_tick(self):
+        """The CLI exits 0 when it fails. The directory is the proof."""
+        code, out = self.run_script(env_extra={"MOE_STUB_SKILLS_FAIL": "1"})
+        self.assertEqual(code, 0, out)
+        name = self.IDS[0].split("/")[-1]
+        self.assertIn("skill %s not installed" % name, out)
+        self.assertIn("Could not fetch", out)
+        self.assertFalse(os.path.isdir(os.path.join(self.hermes_home, "skills", *self.IDS[0].split("/")[1:])))
+
+    def test_dry_run_does_not_call_the_cli(self):
+        code, out = self.run_script("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(hermes_stub_calls(self.hermes_home), [])
+        self.assertFalse(os.path.isdir(os.path.join(self.hermes_home, "skills")), "a dry run made a skills directory")
+
+    def test_the_seam_is_what_every_run_in_this_module_uses(self):
+        self.assertEqual(os.environ.get("MOE_HERMES_BIN"), HERMES_STUB)
+        self.assertEqual(configure.hermes_cli("/no/such/agent"), HERMES_STUB)
 
 
 class EraseAndDeleteTest(ConfigureFixture):
@@ -771,6 +868,75 @@ class ConfigureHermesTest(ConfigureFixture):
                     "python3 ~/.moe/connectors/gmail.py status"):
             self.assertFalse(denied(cmd), "a deny rule blocks ordinary work: %r" % cmd)
 
+    def test_gate_paths_are_denied_under_the_real_home_too(self):
+        """W1-A (2026-11-12). ~/.moe is a link; the home is
+        ~/Library/Application Support/Moe and the app exports that as
+        MOE_HOME. Every gate rule spelled the link, and three of ten had a
+        second spelling, so `echo x > "<real home>/tools/confirm.sh"` was
+        allowed by this layer while the ~/.moe spelling of the same file was
+        refused. Each protected path must be denied under BOTH."""
+        import fnmatch
+        self.run_script()
+        deny = self.cfg()["approvals"]["deny"]
+
+        def denied(cmd):
+            return any(fnmatch.fnmatch(cmd.lower(), str(r).lower()) for r in deny)
+
+        tails = ("tools/confirm.sh", "tools/confirm.s?", "tools/gate.sh",
+                 "hermes/hooks/confirm-send.sh", "hermes/hooks/composio-budget.sh",
+                 "gate/policy.json", "connectors/gmail.manifest",
+                 ".claude/settings.json", "cloud/tier.json", "composio/limits.json")
+        spellings = ("echo x > ~/Library/Application\\ Support/Moe/%s",
+                     'echo x > "$HOME/Library/Application Support/Moe/%s"',
+                     "echo x > '/Users/someone/Library/Application Support/Moe/%s'",
+                     'echo x > "$HOME/Library/Application Support/Moe"/%s',
+                     'cd "$HOME/Library/Application Support/Moe/notes" && tee ../%s < /tmp/evil',
+                     # Moe Dev keeps its own home beside it.
+                     'echo x > "$HOME/Library/Application Support/Moe Dev/%s"')
+        for tail in tails:
+            # The link spelling first: the control. If THIS is not denied the
+            # loop below proves nothing about the real home.
+            self.assertTrue(denied("echo x > ~/.moe/%s" % tail), "control: ~/.moe/%s" % tail)
+            for spelling in spellings:
+                cmd = spelling % tail
+                self.assertTrue(denied(cmd), "the gate is reachable: %r" % cmd)
+        self.assertTrue(denied('mv "$HOME/Library/Application Support/Moe/hermes/hooks/" /tmp/off'))
+
+        # The toolbelt and the person's own files, by the real path.
+        for cmd in ('"$HOME/Library/Application Support/Moe/tools/apple.sh" calendar today',
+                    "~/Library/Application\\ Support/Moe/tools/mac.sh screenshot",
+                    'ls -la "$HOME/Library/Application Support/Moe/tools"',
+                    'cat "$HOME/Library/Application Support/Moe/context/messages.md"',
+                    'python3 "$HOME/Library/Application Support/Moe/connectors/gmail.py" status',
+                    'ls "$HOME/Library/Application Support"'):
+            self.assertFalse(denied(cmd), "a deny rule blocks ordinary work: %r" % cmd)
+
+    def test_a_relocated_home_gets_the_gate_rules_too(self):
+        """A MOE_HOME that is neither spelling — the away machine's
+        $HERMES_HOME/moe-home, a test home — had no rule at all."""
+        import fnmatch
+        self.run_script()
+        deny = self.cfg()["approvals"]["deny"]
+
+        def denied(cmd):
+            return any(fnmatch.fnmatch(cmd.lower(), str(r).lower()) for r in deny)
+
+        for home in (self.moe_home, os.path.realpath(self.moe_home)):
+            for tail in ("tools/confirm.sh", "hermes/hooks/confirm-send.sh",
+                         ".claude/settings.json", "gate/policy.json"):
+                cmd = "echo x > %s/%s" % (home, tail)
+                self.assertTrue(denied(cmd), "the gate is reachable: %r" % cmd)
+            self.assertFalse(denied("%s/tools/apple.sh calendar today" % home))
+            self.assertFalse(denied("cat %s/context/messages.md" % home))
+        # …and nothing is written for a home the constants already cover.
+        self.assertEqual(configure.home_deny_globs("/Users/someone/.moe"), [])
+        self.assertEqual(
+            configure.home_deny_globs("/Users/someone/Library/Application Support/Moe"), [])
+        self.assertEqual(
+            configure.home_deny_globs("/Users/someone/Library/Application Support/Moe Dev"), [])
+        self.assertIn("*/opt/data/moe-home/tools/confirm.s*",
+                      configure.home_deny_globs("/opt/data/moe-home"))
+
     def test_secrets_are_denied_to_the_shell(self):
         """Security review S2 (2026-10-19): the model's shell could read every
         secret Moe keeps. Asserted against Hermes's own matcher when it is
@@ -779,7 +945,8 @@ class ConfigureHermesTest(ConfigureFixture):
         deny = self.cfg()["approvals"]["deny"]
         import fnmatch
         try:
-            sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
+            sys.path.insert(0, os.environ.get("MOE_TEST_HERMES_AGENT")
+                            or os.path.expanduser("~/.hermes/hermes-agent"))
             from tools import approval_floors as floors
             def denied(cmd):
                 saved = floors._ctx._get_approval_config
@@ -1661,22 +1828,120 @@ class ConfigureHermesTest(ConfigureFixture):
         # and dropping it would put ~16 GUI tools back in every prompt.
         self.assertIn("computer_use", defer)
 
+    @staticmethod
+    def hermes_default_defer(agent):
+        """Hermes's default deferral list, read off a hermes-agent checkout.
+
+        It has lived in two places. Up to pin ce81ae8305 it was a literal in
+        tools/tool_search.py; at eb8e427cd1 it is
+        DEFAULT_CONFIG["tools"]["tool_search"]["defer"] in
+        hermes_cli/config_defaults.py, and tool_search.py reads that
+        (`_DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG[...])`). This
+        test knew only the first, so when the list moved it failed on "no
+        longer declares" and stopped comparing anything — while the list
+        itself had changed underneath (2026-11-12). None when neither shape
+        is there: a third move must fail, not skip."""
+        def read(*parts):
+            path = os.path.join(agent, *parts)
+            if not os.path.isfile(path):
+                return ""
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        m = re.search(r"_DEFAULT_DEFERRED_TOOLS\s*=\s*frozenset\(\{(.*?)\}\)",
+                      read("tools", "tool_search.py"), re.S)
+        if m is None:
+            defaults = read("hermes_cli", "config_defaults.py")
+            block = defaults.find('"tool_search": {')
+            if block >= 0:
+                m = re.search(r'"defer":\s*\[(.*?)\]', defaults[block:], re.S)
+        if m is None:
+            return None
+        # Comments inside the list are not names.
+        code = "\n".join(line.split("#", 1)[0] for line in m.group(1).splitlines())
+        return set(re.findall(r'"([a-z_]+)"', code))
+
     def test_tool_search_defer_tracks_installed_hermes(self):
         """TOOL_SEARCH_DEFER is Hermes's default minus the two bridged tools.
-        Read off the INSTALLED Hermes, so an upstream change to its list
-        fails here instead of silently drifting. Skips with no checkout."""
-        path = os.path.join(os.path.expanduser("~"), ".hermes", "hermes-agent",
-                            "tools", "tool_search.py")
-        if not os.path.isfile(path):
+        Read off a Hermes checkout AT THE PIN (MOE_TEST_HERMES_AGENT, else the
+        installed one), so an upstream change to its list fails here instead
+        of silently drifting. A checkout at another commit is not evidence
+        about the pin, in either direction: the test skips and says which
+        commit it found, rather than failing on a stale install or passing
+        on one the pin has moved past."""
+        agent = os.environ.get("MOE_TEST_HERMES_AGENT") or os.path.join(
+            os.path.expanduser("~"), ".hermes", "hermes-agent")
+        if not os.path.isfile(os.path.join(agent, "tools", "tool_search.py")):
             self.skipTest("no hermes-agent checkout to read the default list from")
-        src = open(path, encoding="utf-8").read()
-        m = re.search(r"_DEFAULT_DEFERRED_TOOLS\s*=\s*frozenset\(\{(.*?)\}\)", src, re.S)
-        self.assertIsNotNone(m, "Hermes no longer declares _DEFAULT_DEFERRED_TOOLS")
-        upstream = set(re.findall(r'"([a-z_]+)"', m.group(1)))
+        installer = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(SCRIPT)),
+                                                  "..", "..", "scripts", "install-hermes.sh"))
+        pm = re.search(r'^HERMES_COMMIT="\$\{HERMES_COMMIT-([0-9a-f]{40})\}"',
+                       open(installer, encoding="utf-8").read(), re.M)
+        self.assertIsNotNone(pm, "the pin line in install-hermes.sh changed shape")
+        pin = pm.group(1)
+        if os.path.exists(os.path.join(agent, ".git")):  # a worktree's .git is a file
+            head = subprocess.run(["git", "-C", agent, "rev-parse", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+        else:
+            try:
+                head = open(os.path.join(agent, ".moe-seed-commit")).read().strip()
+            except OSError:
+                head = ""
+        if head != pin:
+            self.skipTest("%s is at %s, not the pin %s — point MOE_TEST_HERMES_AGENT "
+                          "at a checkout of the pin" % (agent, head[:10] or "unknown", pin[:10]))
+        upstream = self.hermes_default_defer(agent)
+        self.assertIsNotNone(
+            upstream, "Hermes's default deferral list is in neither tools/tool_search.py "
+                      "nor hermes_cli/config_defaults.py — find where it moved")
+        # An empty read is a parser that found the place and none of the names.
+        self.assertIn("computer_use", upstream)
+        self.assertIn("session_search", upstream)
         ours_src = open(SCRIPT, encoding="utf-8").read()
-        mo = re.search(r"TOOL_SEARCH_DEFER\s*=\s*\((.*?)\)", ours_src, re.S)
+        mo = re.search(r"^TOOL_SEARCH_DEFER\s*=\s*\((.*?)\)", ours_src, re.S | re.M)
         ours = set(re.findall(r'"([a-z_]+)"', mo.group(1)))
         self.assertEqual(ours, upstream - {"session_search", "todo_list"})
+
+    def test_the_defer_list_moe_wrote_for_the_last_pin_is_moved(self):
+        """`tools.tool_search.defer` replaces Hermes's list wholesale, and an
+        install keeps whatever this script wrote first. So when the list
+        tracks a new pin, an install carrying exactly the old one is carrying
+        Moe's earlier default and is moved; a list the person edited is kept."""
+        self.run_script()
+        cfg = self.cfg()
+        self.assertIn("manage_catalog", cfg["tools"]["tool_search"]["defer"])
+        self.assertNotIn("setup_mcp", cfg["tools"]["tool_search"]["defer"])
+        prior = ["computer_use", "image_generate", "process_manage", "cronjob_manage",
+                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+                 "show_tip", "setup_mcp", "desktop_project", "close_terminal",
+                 "apply_layout", "read_terminal", "read_window_below", "focus_pane"]
+        cfg["tools"]["tool_search"]["defer"] = list(prior)
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        rc, out = self.run_script()
+        self.assertEqual(rc, 0, out)
+        moved = self.cfg()["tools"]["tool_search"]["defer"]
+        self.assertIn("manage_catalog", moved)
+        self.assertNotIn("setup_mcp", moved)
+        self.assertNotIn("session_search", moved)
+        # The list written for pins up to 0.3.25 moves too (v0.23.1 swapped
+        # apply_layout for set_theme), not only the oldest one.
+        cfg["tools"]["tool_search"]["defer"] = [
+            "computer_use", "image_generate", "process_manage", "cronjob_manage",
+            "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+            "manage_catalog", "show_tip", "desktop_project", "close_terminal",
+            "apply_layout", "read_terminal", "read_window_below", "focus_pane"]
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        rc, out = self.run_script()
+        self.assertEqual(rc, 0, out)
+        moved = self.cfg()["tools"]["tool_search"]["defer"]
+        self.assertIn("set_theme", moved)
+        self.assertNotIn("apply_layout", moved)
+        cfg["tools"]["tool_search"]["defer"] = ["computer_use"]
+        with open(self.cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        self.run_script()
+        self.assertEqual(self.cfg()["tools"]["tool_search"]["defer"], ["computer_use"])
 
     def test_toolsets_plugin_and_cron_job(self):
         """The keys and payloads the learn-me pipeline needs to be alive."""
@@ -1684,8 +1949,13 @@ class ConfigureHermesTest(ConfigureFixture):
         self.assertEqual(code, 0, out)
         cfg = self.cfg()
         api = cfg["platform_toolsets"]["api_server"]
-        for name in ("clarify", "computer_use", "kanban", "video", "spotify", "x_search"):
+        for name in ("clarify", "computer_use", "kanban", "video", "x_search"):
             self.assertIn(name, api)
+        # Left Hermes core for catalog plugins; listed only while the plugin
+        # is installed, or Hermes tries to fetch it at every start.
+        for name in ("spotify", "homeassistant"):
+            for platform, row in cfg["platform_toolsets"].items():
+                self.assertNotIn(name, row, platform)
         self.assertEqual(cfg["platform_toolsets"]["telegram"][0], "hermes-telegram")
         self.assertIs(cfg["tools"]["tool_search"]["enabled"], True)
         self.assertIn("moe-profile", cfg["plugins"]["enabled"])
@@ -1759,6 +2029,24 @@ class ConfigureHermesTest(ConfigureFixture):
         self.assertIn('TOOLSET = "moe_settings"', tool)
         self.assertIn('SETTINGS_TOOLSET = "moe_settings"', configure)
         self.assertIn("    SETTINGS_TOOLSET,\n]", configure)
+
+    def test_the_location_toolset_reaches_the_mac_and_never_a_phone(self):
+        """`moe_location` reads where this Mac is. On the Mac's list, and on
+        no chat platform's: a person on their phone is not where the Mac is."""
+        code, out = self.run_script()
+        self.assertEqual(code, 0, out)
+        cfg = self.cfg()
+        self.assertIn("moe_location", cfg["platform_toolsets"]["api_server"])
+        for platform, sets in cfg["platform_toolsets"].items():
+            if platform != "api_server":
+                self.assertNotIn("moe_location", sets, platform)
+        plugin = os.path.join(self.hermes_home, "plugins", "moe-screen")
+        with open(os.path.join(plugin, "location.py")) as f:
+            tool = f.read()
+        with open(SCRIPT) as f:
+            configure = f.read()
+        self.assertIn('TOOLSET = "moe_location"', tool)
+        self.assertIn('LOCATION_TOOLSET = "moe_location"', configure)
 
     def test_the_two_bundled_standalone_plugins_are_enabled(self):
         """security-guidance and disk-cleanup are the only two §4.6 items
@@ -2215,6 +2503,35 @@ _TOOLS_FIRST = ("Before you hand a step to them, look at what your tools say the
                 "theirs only once you have checked that none of them can do it.")
 
 
+# 2026-11-12, "ask, then continue": what the soul says when the browser cannot
+# open signed in as the person. As it reads once the line continuations are
+# gone, with the space that joins it to the sentence after it.
+_SIGNED_OUT_ASK = (
+    "When your browser cannot open signed in as them, it tells you why and does "
+    "nothing. That choice is theirs: say the reason in a line and ask — \"I'm "
+    "not logged in, I'm having an issue opening your signed-in browser. Do you "
+    "want me to still continue, signed out?\" — and go on signed out only after "
+    "they say yes; with nobody there to ask, report what is waiting and stop. "
+    "Whatever you then do signed out was done as nobody: say so, and never tell "
+    "them it was done as them. ")
+
+
+# 2026-11-13 (7efc9c47): the first paragraph gained this sentence, and the
+# soul without it was filed last in MOE_SOUL_PRIOR. Tests that pin a filed
+# soul by position compare against the soul before it.
+_THEIR_WORDS = (" Talk to them in their words, not the machine's: no file paths, "
+                "command or tool names, error codes or settings keys in what you "
+                "say — \"the marketing notes\", not the file's path; \"the posting "
+                "service turned me away\", not its error. When they ask for the "
+                "detail, or are working on the technical side with you, give it "
+                "exactly.")
+
+
+def _before_their_words(soul):
+    assert _THEIR_WORDS in soul, "the their-words sentence moved"
+    return soul.replace(_THEIR_WORDS, "", 1)
+
+
 def _script_constant(name):
     """Read a module-level constant out of configure-hermes.py without
     importing it (the filename has a dash, and importing runs argparse)."""
@@ -2534,11 +2851,14 @@ class PersonaSplitTests(ConfigureFixture):
             self.assertNotIn(word, soul.lower())
         prior = _script_constant("MOE_SOUL_PRIOR")
         # Only a soul filed by a later sentence may still carry this one.
-        self.assertEqual([x for x in prior if "is not a standing fact" in x], [prior[-1]])
+        self.assertEqual([x for x in prior if "is not a standing fact" in x], list(prior[-4:]))
         filed = [x for x in prior if "never a reason to drop it" in x
                  and "is not a standing fact" not in x]
         self.assertEqual(len(filed), 1, "the soul it replaced is filed, once")
-        self.assertEqual(filed[0], soul.replace(sentence + " ", "").replace(_TOOLS_FIRST + " ", ""),
+        pre = _before_their_words(soul)
+        before_jobs = pre[:pre.index("\n\nA scheduled job runs wherever they are")] + "\n"
+        self.assertEqual(filed[0], before_jobs.replace(sentence + " ", "").replace(_TOOLS_FIRST + " ", "")
+                         .replace(_SIGNED_OUT_ASK, ""),
                          "the filed soul is the current one without this sentence")
 
     def test_tools_are_checked_before_a_step_is_handed_over(self):
@@ -2551,9 +2871,49 @@ class PersonaSplitTests(ConfigureFixture):
         for word in ("google", "captcha", "passkey", "account", "browser"):
             self.assertNotIn(word, _TOOLS_FIRST.lower())
         prior = _script_constant("MOE_SOUL_PRIOR")
-        self.assertFalse(any(_TOOLS_FIRST in x for x in prior))
-        self.assertEqual(prior[-1], soul.replace(_TOOLS_FIRST + " ", ""),
-                         "the soul it replaced is filed last, and differs only by this sentence")
+        # Only a soul filed by a later change may carry it: the 2026-11-12
+        # "ask, then continue" text filed the soul that had it.
+        # The 2026-11-13 jobs paragraph (D2) filed the next one after it.
+        # Then 7efc9c47's their-words sentence filed the soul after that.
+        self.assertEqual([x for x in prior if _TOOLS_FIRST in x], list(prior[-3:]))
+        pre = _before_their_words(soul)
+        self.assertEqual(prior[-1], pre, "the their-words sentence is the only change")
+        jobs = pre[pre.index("\n\nA scheduled job runs wherever they are"):]
+        self.assertEqual(prior[-2], pre.replace(jobs, "\n"), "the D2 paragraph is the only change")
+        self.assertEqual(prior[-4], prior[-2].replace(_TOOLS_FIRST + " ", "").replace(_SIGNED_OUT_ASK, ""),
+                         "the soul it replaced is filed, and differs only by this sentence")
+
+    def test_a_browser_that_cannot_open_signed_in_is_asked_about_not_assumed(self):
+        """2026-11-12, owner: "ask, then continue". Hermes's browser, when the
+        person's signed-in profile cannot load, now runs nothing and hands the
+        choice back. The soul said the browser "is signed in as they are" and
+        had no word for when it is not; these sentences carry the question and
+        the two rules — only after their yes, and never reported as them."""
+        soul = _script_constant("MOE_SOUL")
+        self.assertIn(_SIGNED_OUT_ASK, soul)
+        self.assertIn("Do you want me to still continue, signed out?", soul)
+        self.assertIn("go on signed out only after they say yes", soul)
+        self.assertIn("with nobody there to ask, report what is waiting and stop", soul)
+        self.assertIn("never tell them it was done as them", soul)
+        # It sits in the browser paragraph, ahead of "not done".
+        self.assertLess(soul.index("Settings › Permissions › Browse as"), soul.index(_SIGNED_OUT_ASK))
+        self.assertLess(soul.index(_SIGNED_OUT_ASK),
+                        soul.index("Work that did not happen is never reported as done"))
+        # No tool or argument name: the soul is read by every model on every
+        # surface, and the mechanism is the tool's to describe.
+        for word in ("allow_signed_out", "browser_exec", "signed_out_available"):
+            self.assertNotIn(word, soul)
+        # The soul it replaced is filed LAST and differs only by these
+        # sentences — or every Mac running it reads as "customised" and
+        # never gets them.
+        prior = _script_constant("MOE_SOUL_PRIOR")
+        # Filed before the jobs paragraph (D2, 2026-11-13) and the their-words
+        # sentence (7efc9c47), which are filed after it.
+        pre = _before_their_words(soul)
+        self.assertEqual(prior[-1], pre)
+        before_jobs = pre[:pre.index("\n\nA scheduled job runs wherever they are")] + "\n"
+        self.assertEqual(prior[-3], before_jobs.replace(_SIGNED_OUT_ASK, ""))
+        self.assertFalse(any("still continue, signed out" in x for x in prior[:-2]))
 
     def test_writing_the_owner_never_waits_on_a_slow_composio(self):
         """configure-hermes runs at every launch; Composio answers over the
@@ -3962,7 +4322,10 @@ class ChromeExtensionLane(ConfigureFixture):
         # pointing at a launcher in the scratch Hermes home.
         with open(os.path.join(self.tmp, self.MANIFEST)) as f:
             host = json.load(f)
-        self.assertEqual(host["allowed_origins"], ["chrome-extension://ljblhmlmgflmbffbfelamefleikodmjh/"])
+        # Both ids since the fork's b62f5983d6: the Chrome Web Store build first, the unpacked dev id
+        # (the key this staged copy carries) beside it (tools/browser_chrome_extension.EXTENSION_IDS).
+        self.assertEqual(host["allowed_origins"], ["chrome-extension://nmdhnfjfpipnjbfbiligpbdnpfdkojjn/",
+                                                   "chrome-extension://ljblhmlmgflmbffbfelamefleikodmjh/"])
         self.assertTrue(host["path"].startswith(self.hermes_home), host["path"])
         # Installed again over itself: still one folder, nothing left beside it.
         rc, out = self.run_script("--install-chrome-extension", dest)

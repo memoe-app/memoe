@@ -41,7 +41,7 @@ struct TurnStarterConductorTests {
 
     @Test func answeringANudgeIsThePerson() async throws {
         let (moe, brain) = try StallGuardConductorTests.make()
-        moe.queueReminder("Call the dentist before five.")
+        moe.queueReminder("Call the dentist before five.", origin: .init(moment: true))
         let item = try #require(moe.notices.first)
         moe.replyToNotice(item.id, text: "done already")
         try await brain.waitForSends(1)
@@ -73,7 +73,7 @@ struct TurnStarterConductorTests {
 
     @Test func playingAndDismissingANudgeAreBackground() async throws {
         let (moe, brain) = try StallGuardConductorTests.make()
-        moe.queueReminder("Call the dentist before five.")
+        moe.queueReminder("Call the dentist before five.", origin: .init(moment: true))
         let first = try #require(moe.notices.first)
         moe.playNotice(first.id)
         try await brain.waitForSends(1)

@@ -68,6 +68,8 @@ struct MemoryPane: View {
     @State private var loading = true
     /// Why the page is empty, when it is.
     @State private var why: String?
+    /// The last load could not read what Moe has learned (`MemoryReader.Reading`).
+    @State private var couldntLook = false
     @State private var note = ""
     @State private var choosing = false
     @State private var showNotes = false
@@ -307,7 +309,8 @@ struct MemoryPane: View {
         let pending = added[tab] ?? []
         if shown.isEmpty && pending.isEmpty && !adding {
             VStack(alignment: .leading, spacing: Theme.Space.small) {
-                Text(tab == .you && lines.isEmpty && checkList.isEmpty ? (why ?? tab.empty) : tab.empty)
+                Text(couldntLook && tab != .chats ? MemoryReader.couldntLookLine
+                     : tab == .you && lines.isEmpty && checkList.isEmpty ? (why ?? tab.empty) : tab.empty)
                     .font(Theme.Typo.prose(15))
                     .foregroundStyle(Theme.ink3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -402,7 +405,7 @@ struct MemoryPane: View {
     private func answer(_ card: CheckCard, _ a: CardAnswer) {
         let edits = MemoryReader.plan(card, a)
         if case .other = a, edits.isEmpty { return }     // nothing typed: stay
-        withAnimation(Theme.Motion.easeOut) {
+        CalmMotion.animate(Theme.Motion.easeOut) {
             done.append(card.id)
             otherOpen = false
             otherDraft = ""
@@ -417,7 +420,7 @@ struct MemoryPane: View {
 
     /// Skip: on to the next; it is asked again next time.
     private func skip(_ card: CheckCard) {
-        withAnimation(Theme.Motion.easeOut) {
+        CalmMotion.animate(Theme.Motion.easeOut) {
             done.append(card.id)
             otherOpen = false
             otherDraft = ""
@@ -429,7 +432,7 @@ struct MemoryPane: View {
     private func back() {
         let open = Set(cards.map(\.id))
         guard let i = done.lastIndex(where: { open.contains($0) }) else { return }
-        withAnimation(Theme.Motion.easeOut) { _ = done.remove(at: i) }
+        CalmMotion.animate(Theme.Motion.easeOut) { _ = done.remove(at: i) }
     }
 
     private var addField: some View {
@@ -589,7 +592,7 @@ struct MemoryPane: View {
         }
         hidden.insert(item.id)
         let ticket = UUID()
-        withAnimation(Theme.Motion.easeOut) { forgetting = (item, edit, ticket) }
+        CalmMotion.animate(Theme.Motion.easeOut) { forgetting = (item, edit, ticket) }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.undoSeconds) {
             if forgetting?.ticket == ticket { commitForget() }
         }
@@ -598,12 +601,12 @@ struct MemoryPane: View {
     private func undoForget() {
         guard let f = forgetting else { return }
         hidden.remove(f.item.id)
-        withAnimation(Theme.Motion.easeOut) { forgetting = nil }
+        CalmMotion.animate(Theme.Motion.easeOut) { forgetting = nil }
     }
 
     private func commitForget() {
         guard let f = forgetting else { return }
-        withAnimation(Theme.Motion.easeOut) { forgetting = nil }
+        CalmMotion.animate(Theme.Motion.easeOut) { forgetting = nil }
         switch f.edit {
         case .askMoe(let message):
             conductor.submit(message, origin: .typed, starter: .person)
@@ -668,9 +671,10 @@ struct MemoryPane: View {
     private func reload() {
         loading = lines.isEmpty && checkList.isEmpty
         Task {
-            let (l, q) = await ScriptRunner.offMain {
-                (MemoryReader.lines(), MemoryReader.checkList() ?? MemoryCheck.fallback(MemoryReader.questions()))
+            let (reading, q) = await ScriptRunner.offMain {
+                (MemoryReader.read(), MemoryReader.checkList() ?? MemoryCheck.fallback(MemoryReader.questions()))
             }
+            let l = reading.lines
             let w: String? = (l.isEmpty && q.isEmpty)
                 ? await ScriptRunner.offMain { BackgroundLearning.explain() } : nil
             let keepsACopy = await conductor.cloud.keepsACopy()
@@ -678,6 +682,7 @@ struct MemoryPane: View {
                 lines = l
                 checkList = q
                 why = w
+                couldntLook = reading.couldntLook
                 awayCopy = keepsACopy
                 // A change the reload now shows is no longer pending; one a
                 // line of Hermes's memory is still waiting on stays.

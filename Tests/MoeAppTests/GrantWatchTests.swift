@@ -213,7 +213,11 @@ struct GrantWatchTests {
     /// before then, is not watched; a readable path is, because reading the
     /// folder is the very thing that failed.
     @Test func relaunchGrantsAreWatchedOnlyWhenTheProbeIsTheEffect() {
-        #expect(!GrantWatch.watchable(.accessibility))     // needsRelaunch, AXIsProcessTrusted
+        // Accessibility takes effect the moment it is switched on
+        // (AccessibilityWatch arms the key then), so its probe flipping
+        // means it works now: watched, like any live grant.
+        #expect(!PermissionGuide.accessibility.needsRelaunch)
+        #expect(GrantWatch.watchable(.accessibility))
         #expect(!GrantWatch.watchable(.screenRecording))   // needsRelaunch, preflight
         #expect(!GrantWatch.watchable(.inputMonitoring))
         #expect(GrantWatch.watchable(.fullDiskAccess))     // needsRelaunch, but readable path

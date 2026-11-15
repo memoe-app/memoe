@@ -69,6 +69,7 @@ struct IslandInboxView: View {
                     Image(systemName: "tray")
                         .font(.system(size: 18, weight: .light))
                         .foregroundStyle(Theme.Island.ink3)
+                        .accessibilityHidden(true)
                     Text("All clear. Nothing waiting.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(Theme.Island.ink3)
@@ -84,7 +85,8 @@ struct IslandInboxView: View {
                 ScrollView(.vertical, showsIndicators: false) { list(needs: needs, fyi: fyi) }
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: rows.map(\.id))
+        // A finished row slides out sideways; under Reduce Motion it is gone.
+        .calmAnimation(.easeInOut(duration: 0.25), value: rows.map(\.id))
     }
 
     private func list(needs: [InboxItem], fyi: [InboxItem]) -> some View {
@@ -106,6 +108,7 @@ struct IslandInboxView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 5) {
                     Image(systemName: "checklist").font(.system(size: 9, weight: .bold))
+                        .accessibilityHidden(true)
                     Text("Reminders").font(.system(size: 10, weight: .semibold))
                 }
                 .foregroundStyle(Theme.Island.amber)
@@ -149,7 +152,10 @@ struct IslandInboxView: View {
         let tint = NoticeStyle.tint(n.kind)
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
+                // The glyph is the kind's colour and shape; the word beside
+                // it is what VoiceOver reads.
                 Image(systemName: NoticeStyle.icon(n.kind)).font(.system(size: 8.5, weight: .bold))
+                    .accessibilityHidden(true)
                 Text(n.kind.label).font(.system(size: 10, weight: .semibold))
                 Spacer(minLength: 0)
                 Text(NoticeStyle.time(n.at))
@@ -163,6 +169,7 @@ struct IslandInboxView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss it. It moves to Done in the app's Inbox.")
+                .accessibilityLabel("Dismiss")
             }
             .foregroundStyle(tint)
             Text(IslandView.linked(n.title))
@@ -187,11 +194,31 @@ struct IslandInboxView: View {
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.045)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.Island.rule, lineWidth: 1))
         .transition(.asymmetric(insertion: .opacity, removal: .opacity.combined(with: .move(edge: .trailing))))
+        // One stop per card: its kind, title, summary and time read as one
+        // sentence, and its buttons (Done, Snooze, Dismiss…) are the card's
+        // actions rather than five more stops each.
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private func actions(_ n: InboxItem) -> some View {
         let snoozeOpen = (snoozing ?? snoozeOpenFor) == n.id
+        if !n.buy.isEmpty {
+            // The 80 % card (docs/PLANS-AND-CAPS-2026-11-13.md §7 D7): its
+            // one do-it buys the pack; Stripe shows the price first.
+            FlowRow {
+                InboxButton(n.buyTitle.isEmpty ? "Add a pack" : n.buyTitle, style: .primary) {
+                    conductor.buyNoticePack(n.id)
+                }
+                InboxButton("Not now", style: .quiet) { conductor.finishNotice(n.id, outcome: "Not now") }
+            }
+        } else {
+            kindActions(n, snoozeOpen: snoozeOpen)
+        }
+    }
+
+    @ViewBuilder
+    private func kindActions(_ n: InboxItem, snoozeOpen: Bool) -> some View {
         switch n.kind {
         case .reminder:
             if snoozeOpen {
@@ -284,7 +311,10 @@ struct InboxButton: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Text(title).font(.system(size: 11, weight: style == .primary ? .semibold : .medium))
-                if let icon { Image(systemName: icon).font(.system(size: 7.5, weight: .bold)) }
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 7.5, weight: .bold))
+                        .accessibilityHidden(true)
+                }
             }
             .lineLimit(1)
             .foregroundStyle(foreground)
@@ -390,5 +420,8 @@ struct InboxIconButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityLabel(on ? "Inbox, showing" : "Inbox")
+        .accessibilityValue(count == 0 ? "Nothing waiting" : count == 1 ? "1 waiting" : "\(count) waiting")
+        .accessibilityHint(on ? "Goes back to the conversation" : "Shows what is waiting for you")
     }
 }

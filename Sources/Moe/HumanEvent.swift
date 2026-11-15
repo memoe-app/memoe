@@ -56,11 +56,11 @@ final class HumanPresence {
         if consumed.count > 128 { consumed.removeAll() }   // unbounded only in theory
     }
 
-    /// The verdict on the event dispatching right now, for a control at
-    /// `frameInWindow` (SwiftUI `.global` space: window content, top-left
-    /// origin, y down). Call synchronously inside the action — after an
-    /// `await`, `currentEvent` is somebody else's.
-    func classify(control frameInWindow: CGRect?,
+    /// The verdict on the event dispatching right now, for the control at
+    /// `place` (`HumanPressPlace`: AppKit's own rectangle for it, read now).
+    /// Call synchronously inside the action — after an `await`,
+    /// `currentEvent` is somebody else's.
+    func classify(control place: HumanPressPlace?,
                   now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> HumanEventRule.Verdict {
         guard let event = NSApp.currentEvent else { return HumanEventRule.classify(nil) }
         let kind: HumanEventRule.Facts.Kind
@@ -74,27 +74,26 @@ final class HumanPresence {
         let pid = event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1
         let live = (lastPersonTimestamp == event.timestamp) && !consumed.contains(event.timestamp)
 
+        // Read only for the two kinds that can be a press: other event
+        // types do not all carry a window or a location.
+        let where_ = (kind == .mouseUp || kind == .keyDown) ? place?.read() : nil
+        let eventWindow = event.window?.windowNumber ?? -1
         let facts = HumanEventRule.Facts(
             kind: kind, sourcePID: pid, age: now - event.timestamp,
             liveAndUnused: live,
-            insideControl: hitTests(event, frameInWindow: frameInWindow),
-            activatesControl: activates(event))
+            insideControl: kind == .mouseUp
+                && HumanEventRule.insideControl(click: event.locationInWindow, eventWindow: eventWindow,
+                                                place: where_),
+            activatesControl: activates(event, place: where_))
         let verdict = HumanEventRule.classify(facts)
         if verdict.isPerson { consume(event.timestamp) }
         return verdict
     }
 
-    private func hitTests(_ event: NSEvent, frameInWindow: CGRect?) -> Bool {
-        guard let frame = frameInWindow,
-              let height = event.window?.contentView?.bounds.height else { return false }
-        // locationInWindow is bottom-left, y up; SwiftUI `.global` is
-        // top-left, y down. Flip y to compare.
-        let loc = event.locationInWindow
-        return frame.contains(CGPoint(x: loc.x, y: height - loc.y))
-    }
-
-    private func activates(_ event: NSEvent) -> Bool {
+    private func activates(_ event: NSEvent, place: ControlPlace?) -> Bool {
         guard event.type == .keyDown, event.window?.isKeyWindow == true else { return false }
+        // Where the control's window is known, the key must have gone to it.
+        if let place, place.windowNumber != event.window?.windowNumber { return false }
         switch event.keyCode {
         case 36, 76, 49: return true   // Return, keypad Enter, Space
         default: return false
@@ -102,25 +101,111 @@ final class HumanPresence {
     }
 }
 
+/// Where a control is, for the hit-test: a view AppKit lays out behind it
+/// (`HumanPressProbe`), asked for its rectangle **at the moment of the
+/// press**. Nothing is cached, so there is no frame captured before layout,
+/// none left over from before a resize, and none in a coordinate space that
+/// has to be converted (see `ControlPlace` for what that cost).
+@MainActor
+final class HumanPressPlace {
+    fileprivate(set) weak var view: NSView?
+
+    func read() -> ControlPlace? {
+        guard let view, let window = view.window, !view.isHiddenOrHasHiddenAncestor else { return nil }
+        return ControlPlace(windowNumber: window.windowNumber,
+                            rectInWindow: view.convert(view.bounds, to: nil))
+    }
+}
+
+extension HumanPressPlace {
+    /// **Weaker than a control's own place, and only for a control that has
+    /// none yet**: the whole content of the window the event dispatching
+    /// right now was delivered to. A press judged against it still has to be
+    /// a live, unused, hardware event made this instant — so an accessibility
+    /// press (no event), a posted click (the poster's pid) and a lingering
+    /// event all fail exactly as they do for a control — but it is not proved
+    /// to have landed on THIS control, only in its window. Call it in the
+    /// control's action, like `HumanEvent.current`. Give the control a
+    /// `HumanPressProbe` instead wherever its view can be edited.
+    static func windowOfCurrentEvent() -> HumanPressPlace? {
+        guard let content = NSApp.currentEvent?.window?.contentView else { return nil }
+        let place = HumanPressPlace()
+        place.view = content
+        return place
+    }
+}
+
+/// Put behind a consent control — `.background(HumanPressProbe(place))` — so
+/// the control has a place to hit-test. It draws nothing and takes no clicks.
+struct HumanPressProbe: NSViewRepresentable {
+    let place: HumanPressPlace?
+    init(_ place: HumanPressPlace?) { self.place = place }
+
+    final class Probe: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+    func makeNSView(context: Context) -> Probe {
+        let view = Probe()
+        view.setAccessibilityElement(false)
+        place?.view = view
+        return view
+    }
+    func updateNSView(_ view: Probe, context: Context) { place?.view = view }
+}
+
 enum HumanEvent {
-    /// The verdict for the control at `frameInWindow`, right now.
+    /// The verdict for the control at `place`, right now. Synchronously, in
+    /// the control's action.
     @MainActor
-    static func current(control frameInWindow: CGRect?) -> HumanEventRule.Verdict {
-        HumanPresence.shared.classify(control: frameInWindow)
+    static func current(control place: HumanPressPlace?) -> HumanEventRule.Verdict {
+        HumanPresence.shared.classify(control: place)
     }
 
-    /// Gate a consent action that is NOT a plain SwiftUI control — key
-    /// registration (D9.14 point 4), say — the same way `HumanOnlyButton`
-    /// gates a button: run only for a person's press, or after the person
-    /// authenticates. Returns whether to proceed.
+    /// Gate a consent step that is NOT itself a control the person presses —
+    /// the Google sign-in that registers this Mac's key, say. It follows from
+    /// a press, so the press that was verified answers for it
+    /// (`ConsentChain`: once, within seconds, and only for a step that press
+    /// leads to). With no such press behind it, the person authenticates.
+    /// Never "a person's press" on its own account: nothing is pressed here.
     @MainActor
-    static func authorize(control: String, frameInWindow: CGRect? = nil,
-                          reason: String = HumanOnly.authReason,
+    static func authorize(step: String, reason: String = HumanOnly.authReason,
+                          chain: ConsentChain? = ConsentChain.current,
                           authenticator: PersonAuthenticator = LocalAuthAuthenticator()) async -> Bool {
-        let verdict = current(control: frameInWindow)
-        if verdict.isPerson { return true }
-        Log.write("consent: '\(control)' not a person's press — \(verdict.reason); asking to authenticate")
+        if let chain, chain.covers(step) {
+            Log.write("consent: '\(step)' follows from your press on '\(chain.origin)'; not asking again")
+            return true
+        }
+        Log.write("consent: '\(step)' has no person's press behind it; asking to authenticate")
         return await authenticator.confirmPerson(reason: reason)
+    }
+
+    /// Gate a control whose press was read with `current(control:)` in its
+    /// own action: a person's press goes ahead, anything else authenticates.
+    /// Returns the proof, which opens the chain for what follows.
+    @MainActor
+    static func authorize(control: String, verdict: HumanEventRule.Verdict,
+                          reason: String = HumanOnly.authReason,
+                          authenticator: PersonAuthenticator = LocalAuthAuthenticator()) async -> PersonProof? {
+        if let proof = HumanGate.proof(verdict) { return proof }
+        Log.write("consent: '\(control)' not a person's press — \(verdict.reason); asking to authenticate")
+        return await HumanGate.prove(verdict, reason: reason, authenticator: authenticator)
+    }
+
+    /// Run a consent control's action inside the chain its press opens, so
+    /// the steps that follow from it are not asked about again.
+    @MainActor
+    static func run(_ proof: PersonProof, control: String, _ action: () -> Void) {
+        ConsentChain.$current.withValue(ConsentChain(proof, origin: control), operation: action)
+    }
+}
+
+extension HumanEvent {
+    /// `run`, for an action that waits: the chain is bound for as long as the
+    /// action takes (a sign-in in the browser), and to nothing after it.
+    @MainActor
+    static func run<T: Sendable>(_ proof: PersonProof, control: String,
+                                 _ action: () async throws -> T) async rethrows -> T {
+        try await ConsentChain.$current.withValue(ConsentChain(proof, origin: control), operation: action)
     }
 }
 
@@ -163,7 +248,7 @@ struct HumanOnlyButton<Label: View>: View {
     let action: () -> Void
     let authenticator: PersonAuthenticator
     let label: () -> Label
-    @State private var frameInWindow: CGRect?
+    @State private var place = HumanPressPlace()
     @State private var refused = false
 
     init(control: String, authenticator: PersonAuthenticator = LocalAuthAuthenticator(),
@@ -177,13 +262,9 @@ struct HumanOnlyButton<Label: View>: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             Button {
-                gate(HumanEvent.current(control: frameInWindow))
+                gate(HumanEvent.current(control: place))
             } label: { label() }
-            .background(GeometryReader { geo in
-                Color.clear
-                    .onAppear { frameInWindow = geo.frame(in: .global) }
-                    .onChange(of: geo.frame(in: .global)) { frameInWindow = $0 }
-            })
+            .background(HumanPressProbe(place))
             if refused {
                 Text(HumanOnly.note).font(.caption).foregroundStyle(.secondary)
                     .accessibilityIdentifier("human-only-note")
@@ -192,11 +273,13 @@ struct HumanOnlyButton<Label: View>: View {
     }
 
     private func gate(_ verdict: HumanEventRule.Verdict) {
-        if verdict.isPerson { refused = false; action(); return }
-        Log.write("consent: '\(control)' not a person's press — \(verdict.reason); asking to authenticate")
+        if let proof = HumanGate.proof(verdict) {
+            refused = false; HumanEvent.run(proof, control: control, action); return
+        }
         Task { @MainActor in
-            if await authenticator.confirmPerson(reason: HumanOnly.authReason) {
-                refused = false; action()
+            if let proof = await HumanEvent.authorize(control: control, verdict: verdict,
+                                                      authenticator: authenticator) {
+                refused = false; HumanEvent.run(proof, control: control, action)
             } else {
                 refused = true
                 Log.write("consent: '\(control)' not authenticated; refused")
@@ -215,20 +298,25 @@ extension HumanOnlyButton where Label == Text {
 /// A Toggle binding whose *set* goes through only for a person's press, or
 /// after the person authenticates. A refused flip leaves the value unchanged
 /// (SwiftUI re-reads it, so the switch springs back). Give the Toggle a
-/// `GeometryReader` background that writes `frame` so the hit-test works;
-/// `PrivacyToggleRow` (integration) does this.
+/// `.background(HumanPressProbe(place))` so the hit-test works; `HumanLever`
+/// does this.
 extension Binding where Value == Bool {
     @MainActor
-    func humanOnly(_ control: String, frame: CGRect?, refused: Binding<Bool>,
+    func humanOnly(_ control: String, place: HumanPressPlace?, refused: Binding<Bool>,
                    authenticator: PersonAuthenticator = LocalAuthAuthenticator()) -> Binding<Bool> {
         Binding(get: { wrappedValue }, set: { new in
             guard new != wrappedValue else { return }
-            let verdict = HumanEvent.current(control: frame)
-            if verdict.isPerson { refused.wrappedValue = false; wrappedValue = new; return }
-            Log.write("consent: '\(control)' not a person's press — \(verdict.reason); asking to authenticate")
+            let verdict = HumanEvent.current(control: place)
+            if let proof = HumanGate.proof(verdict) {
+                refused.wrappedValue = false
+                HumanEvent.run(proof, control: control) { wrappedValue = new }
+                return
+            }
             Task { @MainActor in
-                if await authenticator.confirmPerson(reason: HumanOnly.authReason) {
-                    refused.wrappedValue = false; wrappedValue = new
+                if let proof = await HumanEvent.authorize(control: control, verdict: verdict,
+                                                          authenticator: authenticator) {
+                    refused.wrappedValue = false
+                    HumanEvent.run(proof, control: control) { wrappedValue = new }
                 } else {
                     refused.wrappedValue = true
                 }

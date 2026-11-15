@@ -67,7 +67,7 @@ def _portable(job):
     return isinstance(job.get("prompt"), str) and bool(job["prompt"].strip())
 
 
-_MAC_BOUND = re.compile(r"(?:^|[\s\"'`(=])(?:/Users/|~/|\$HOME/)|\blocal\s*=\s*true\b|\bbrowser_exec\b", re.I)
+_MAC_BOUND = re.compile(r"(?:^|[\s\"'`(=])(?:/Users/|~/|\$HOME/)|\blocal\s*=\s*true\b", re.I)
 
 
 def _travels(job):

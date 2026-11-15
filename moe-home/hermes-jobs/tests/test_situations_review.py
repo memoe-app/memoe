@@ -247,7 +247,7 @@ class SpendTest(Base):
         f = found_for()["situation"]
         sid, _ = self.s.upsert("native/whatsapp", "t1", "Acme", dict(f), NOW)
         rec = self.s.load_situations()[sid]
-        self.s.set_prepared(sid, {"offer": "ready", "for": rec["material"], "at": "2026-09-24T19:00:00Z"})
+        self.s.set_prepared(sid, {"offer": "ready", "for": rec["material"], "at": "2026-09-24T19:00:00Z"}, NOW)
         self.assertFalse(prep.should_prepare(self.s.load_situations()[sid]))
         # "ok": re-sensed, same positions and stakes.
         self.s.upsert("native/whatsapp", "t1", "Acme", dict(f, p_wanted=0.82), NOW + 600)

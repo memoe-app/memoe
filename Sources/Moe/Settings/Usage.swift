@@ -330,24 +330,25 @@ enum Usage {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes/token-usage.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes/token-usage.py")
+        if let c = Payload.checkoutPath("moe-home/hermes/token-usage.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
-    /// Asked with `/usr/bin/python3`, not the Hermes venv's interpreter.
+    /// Asked with `BrainSetup.python()` — Moe's own interpreter, and never
+    /// the system `python3`, which without developer tools is a stub that
+    /// puts up an install dialog.
     ///
-    /// `token-usage.py` is stdlib-only on purpose — no PyYAML, nothing
-    /// imported out of Hermes — precisely so a Mac whose Hermes install is
-    /// broken can still be told what it spent before it broke. The same
-    /// reason `history.py` is asked that way, and the opposite of
-    /// `reminders.py`, which needs the venv because it writes through
-    /// Hermes's own cron.
+    /// `token-usage.py` is still stdlib-only on purpose — no PyYAML, nothing
+    /// imported out of Hermes — so that any real interpreter can run it:
+    /// `BrainSetup.python()` falls back to one when Moe's own is broken and
+    /// the Mac has developer tools, which is the most that can be offered
+    /// without risking that dialog.
     static func report(days: Int = 30, tools: Int = 12) -> Report? {
         guard let script = scriptPath() else { return nil }
         // Joined, for the same reason `Chats.askIndex` joins its own: one
         // spelling for every argument this repo hands argparse, so nobody
         // has to remember which of them can carry a leading hyphen.
-        let r = ScriptRunner.run("/usr/bin/python3",
+        let r = ScriptRunner.run(BrainSetup.python(),
                                  [script, "usage", "--days=\(days)", "--tools=\(tools)"],
                                  timeout: 30)
         guard let data = Chats.jsonPart(r.output) else { return nil }

@@ -24,6 +24,11 @@
 #   MOE_FAKE_REFUSE_DELAY=s  sleep this long before refusing — Hermes's
 #                            authoritative check runs after plugin discovery
 #   MOE_FAKE_SERVE_DELAY=s   sleep this long before binding the port
+#   MOE_FAKE_HANG_FILE=path  while the file exists, the first POST hangs the
+#                            whole gateway: the file is removed (so the
+#                            replacement behaves), and from then on this
+#                            process accepts connections and answers nothing —
+#                            not that turn, not GET /v1/models. Alive, and hung.
 #
 # Dictation polish (scripts/test-dictation-polish.sh): a POST whose
 # X-Hermes-Session-Key is `moe-dictation` is answered with
@@ -47,7 +52,7 @@
 #   MOE_FAKE_APPLIED_TOOLSETS=a,b   echo this instead of what was asked for
 #
 # Meeting notes (scripts/test-meeting.sh): a POST whose X-Hermes-Session-Key
-# is `moe-meeting` is answered with the contents of the file named by
+# is `moe-meeting` or `moe-meeting-<purpose>` is answered with the contents of the file named by
 #   MOE_FAKE_MEETING_ACTIONS   the minute scan's reply ({"actions":[…]}); the
 #                              scan is told from the summary by <new-lines>
 #   MOE_FAKE_MEETING           (a notes JSON, or any text to exercise the
@@ -120,9 +125,14 @@ def transcript_of(body):
         return "polished"
     inner = user.split("<transcript>", 1)[-1].split("</transcript>", 1)[0].strip()
     return inner.upper()
+hang_file = os.environ.get("MOE_FAKE_HANG_FILE", "")
+hung = [False]
+def hang_forever():
+    while True: time.sleep(3600)
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
+        if hung[0]: hang_forever()
         if self.path != "/v1/models":
             self.send_error(404); return
         body = json.dumps({"data": [{"id": "fake-model"}]}).encode()
@@ -134,6 +144,11 @@ class H(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions":
             self.send_error(404); return
         n = int(self.headers.get("Content-Length", "0")); body = self.rfile.read(n)
+        if hang_file and os.path.exists(hang_file):
+            try: os.remove(hang_file)
+            except OSError: pass
+            hung[0] = True
+        if hung[0]: hang_forever()
         drop_file = os.environ.get("MOE_FAKE_DROP_STREAM_FILE", "")
         drop_left = 0
         if drop_file:
@@ -152,14 +167,22 @@ class H(BaseHTTPRequestHandler):
             var = "MOE_FAKE_RESOLVE_REPLY" if b"Existing claim" in body else "MOE_FAKE_LEARN_REPLY"
             path = os.environ.get(var, "")
             reply = open(path).read() if path else "{\"claims\": [], \"questions\": []}"
-        elif self.headers.get("X-Hermes-Session-Key") == "moe-meeting" and b"<new-lines>" in body:
+        elif (self.headers.get("X-Hermes-Session-Key") or "").startswith("moe-meeting") and b"<new-lines>" in body:
             # The minute scan while the meeting runs, not the summary at the
-            # end: same session key, told apart by the prompt shape.
+            # end. Told apart by the prompt shape, and by the key as well since
+            # each purpose got a session of its own: the app sends
+            # moe-meeting-scan here and moe-meeting-notes below (sessionKey in
+            # MoeMeeting/MeetingBrainSessions.swift). This branch matched the
+            # bare key exactly, so after that change every meeting request
+            # fell through to the default reply and scripts/test-meeting.sh
+            # went red on a missing summary.md.
+            # (No quote characters in this comment: this Python is inside a
+            # shell string, and one double quote here ends it.)
             path = os.environ.get("MOE_FAKE_MEETING_ACTIONS", "")
             reply = open(path).read() if path else json.dumps({"actions": [
                 {"who": "you", "what": "book the follow-up", "when": "Friday"},
                 {"who": "them (speaker 2)", "what": "Send the notes.", "when": ""}]})
-        elif self.headers.get("X-Hermes-Session-Key") == "moe-meeting":
+        elif (self.headers.get("X-Hermes-Session-Key") or "").startswith("moe-meeting"):
             path = os.environ.get("MOE_FAKE_MEETING", "")
             reply = open(path).read() if path else json.dumps({
                 "title": "Fake meeting notes",

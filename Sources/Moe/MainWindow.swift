@@ -18,6 +18,20 @@ import SwiftUI
 struct MainWindow: View {
     @ObservedObject var conductor: Conductor
     @State private var section: Section = .chat
+    /// Connections opens on this row. Only `--settings-snapshot` passes it.
+    private let selectingConnection: String?
+    private let connectionsChecked: Date?
+
+    /// `section` and the two after it exist for `--settings-snapshot`, which
+    /// draws the whole window on a chosen pane at a chosen size — the only
+    /// way to photograph what the window does when a pane does not fit.
+    init(conductor: Conductor, section: Section = .chat,
+         selectingConnection: String? = nil, connectionsChecked: Date? = nil) {
+        self.conductor = conductor
+        _section = State(initialValue: section)
+        self.selectingConnection = selectingConnection
+        self.connectionsChecked = connectionsChecked
+    }
 
     /// Every screen the app has. `place` decides where it is reached from.
     ///
@@ -261,7 +275,8 @@ struct MainWindow: View {
         VStack(alignment: .leading, spacing: Theme.Space.snug) {
             Rectangle().fill(Theme.rule).frame(height: 1)
             statusDot(ok: conductor.connected, on: "Connected", off: "Connecting…")
-            statusDot(ok: conductor.voiceReady, on: "Voice ready", off: "Voice loading…")
+            // The microphone as well as the models (`VoiceStatus`).
+            statusDot(ok: conductor.voiceStatus.ok, on: conductor.voiceStatus.text, off: conductor.voiceStatus.text)
         }
         .padding(.horizontal, Theme.Space.small)
         .padding(.top, Theme.Space.small)
@@ -280,7 +295,11 @@ struct MainWindow: View {
 
     // MARK: - Content
 
-    private var content: some View {
+    /// Not private: `--settings-snapshot` measures the least height this
+    /// asks for (`SettingsSnapshot.minimumSize`). The window's own
+    /// `minHeight` frame answers that question with its own number whatever
+    /// is inside it, so the window cannot be asked.
+    var content: some View {
         Group {
             switch section {
             case .chat:        ChatPane(conductor: conductor)
@@ -288,7 +307,8 @@ struct MainWindow: View {
             case .dictation:   DictationPane(conductor: conductor)
             case .meetings:    MeetingsPane(conductor: conductor)
             case .memory:      MemoryPane(conductor: conductor)
-            case .connections: ConnectionsPane(conductor: conductor)
+            case .connections: ConnectionsPane(conductor: conductor, selecting: selectingConnection,
+                                               checked: connectionsChecked)
             case .reachMoe:    ReachMoePane(conductor: conductor)
             // Only reachable by a deep link that arrives before the Settings
             // window opens. Harmless, and better than a blank panel.
@@ -323,9 +343,11 @@ struct MainWindow: View {
 
 struct ConnectionsPane: View {
     @ObservedObject var conductor: Conductor
+    var selecting: String?
+    var checked: Date?
 
     var body: some View {
-        ConnectionsView(conductor: conductor, mode: .services)
+        ConnectionsView(conductor: conductor, mode: .services, selecting: selecting, checked: checked)
     }
 }
 
@@ -383,12 +405,13 @@ struct FirstOpenNotice: View {
                         .padding(.leading, 10)
                     Text("Click Open. That is all of it — there is no trip to System "
                          + "Settings and no Privacy & Security step.")
-                    Text("After that, Memoe asks for the things it needs as it first "
-                         + "needs them: the microphone the first time you talk to it, "
-                         + "and permission to control your Mac the first time you ask "
-                         + "it to do something there. Those are macOS asking on your "
-                         + "behalf, not warnings about Memoe — it cannot hear you or act "
-                         + "for you until you say yes.")
+                    Text("After that, the welcome inside Memoe asks for the things it "
+                         + "needs, one at a time: the microphone, so it can hear you, "
+                         + "then permission to notice its talk key and to see your "
+                         + "screen. You can skip any of them, and whatever you skip is "
+                         + "asked for again the first time it is needed. Those are "
+                         + "macOS asking on your behalf, not warnings about Memoe — it "
+                         + "cannot hear you or act for you until you say yes.")
                 }
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)

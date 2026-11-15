@@ -1,6 +1,7 @@
 import AppKit
 import MoeBrain
 import MoeDesign
+import MoeMeeting
 import MoeVoice
 import SwiftUI
 
@@ -126,6 +127,33 @@ enum SettingsSnapshot {
                   ChatCopyBar(selecting: .constant(false)) {}
                   ChatTurnsPose()
               }.background(Theme.raised))
+        // The whole window on the Chat page, in every conversation state
+        // (`ChatPoses`), in a *titled* window built the way AppDelegate
+        // builds the real one: full-size content under a transparent
+        // titlebar, with the traffic lights drawn. A borderless window has
+        // no titlebar, so the greeting clipped under it (deep dive §2.1)
+        // could not be seen in any shot. "main-chat-window" draws just these.
+        #if DEBUG
+        for pose in ChatPoses.all {
+            let name = "main-chat-window-\(pose.name)"
+            guard only.isEmpty || name.contains(only) else { continue }
+            conductor.pose(pose.state)
+            for dark in [false, true] {
+                let path = (directory as NSString).appendingPathComponent("\(name)-\(dark ? "dark" : "light").png")
+                if writeTitled(MainWindow(conductor: conductor, section: .chat)
+                                .environment(\.colorScheme, dark ? .dark : .light),
+                               to: path, size: CGSize(width: 900, height: 600),
+                               appearance: dark ? .darkAqua : .aqua) {
+                    written += 1
+                    if !dark { print(name) }
+                } else {
+                    failed += 1
+                    FileHandle.standardError.write(Data("could not render \(name)\n".utf8))
+                }
+            }
+        }
+        conductor.pose(Conductor.SnapshotState())
+        #endif
         shoot("main-chat-selecting", size: CGSize(width: main.width - 172, height: 60),
               VStack(spacing: 0) {
                   ChatCopyBar(selecting: .constant(true)) {}
@@ -235,6 +263,22 @@ enum SettingsSnapshot {
               SkillsPane(conductor: conductor, filter: .off).background(Theme.raised))
         shoot("settings-05e2-usage-days", size: tall,
               UsagePane(conductor: conductor, showingDays: true).background(Theme.raised))
+        // Meetings: the list, and one meeting whose notes were never written
+        // — "Write the notes" before, during, and after it failed.
+        shoot("main-meetings-list", size: CGSize(width: main.width - 172, height: main.height),
+              MeetingsPane(conductor: conductor))
+        var noNotes = MeetingRecord(startedAt: Date(timeIntervalSince1970: 1_762_900_000), durationSeconds: 2520,
+                                    folder: scratch + "/meetings/2026-11-11-1706",
+                                    summaryFailure: "writing the notes did not finish within 240 s")
+        noNotes.incomplete = false
+        let notesPoses: [(String, MeetingNotesWriter.State)] = [
+            ("idle", .idle), ("writing", .writing),
+            ("failed", .failed(MeetingNotesRewrite.Failure.brain("").sentence)),
+        ]
+        for (name, state) in notesPoses {
+            shoot("main-meeting-no-notes-\(name)", size: CGSize(width: main.width - 172, height: 400),
+                  MeetingsPane(conductor: conductor, posed: .init(record: noNotes, notes: state)))
+        }
         shoot("main-memory", size: main, MemoryPane(conductor: conductor, demo: .init(tab: .you)))
         // The same page with something in it. The scratch home is empty, so
         // the render above is the empty state; these write a small, invented
@@ -314,21 +358,130 @@ enum SettingsSnapshot {
             let w = fileAccess ? #"[{"code": "file_access_on", "text": "Moe's Chrome extension is allowed to open files on this Mac. Moe never uses that; turn it off in Chrome › Extensions › Memoe › \"Allow access to file URLs\"."}]"# : "[]"
             return ChromeLaneReport.parse(#"{"host_installed": \#(host), "enabled": \#(on), "connected": \#(connected), "warnings": \#(w), "error": null, "source": "\#(stale ? ChromeExtensionModel.demoStale : "demo")"}"#)!
         }
-        for (name, r) in [("not-installed", chromeReport(host: false, on: false, connected: false)),
-                          ("waiting", chromeReport(host: true, on: true, connected: false)),
-                          ("connected", chromeReport(host: true, on: true, connected: true)),
-                          ("connected-file-access", chromeReport(host: true, on: true, connected: true, fileAccess: true)),
-                          ("off", chromeReport(host: true, on: false, connected: false)),
-                          ("update", chromeReport(host: true, on: true, connected: true, stale: true))] {
+        // The facts are what the app reads for itself (ChromeExtensionProbe):
+        // one picture per way the extension can be there and not working.
+        let goodHost = ChromeHostManifest.Status(present: true, missingIDs: [], launcherOK: true)
+        let seen = ChromeSeen(extensionID: ChromeExtension.storeID, at: .distantPast)
+        let elsewhere = ChromeProfiles.Scan.read([
+            .init(dir: "Default", name: "Personal", open: true, ids: []),
+            .init(dir: "Profile 1", name: "Work", open: false, ids: [ChromeExtension.storeID])])
+        let chromeFacts: [(String, ChromeLaneReport, ChromeLaneFacts?)] = [
+            ("not-installed", chromeReport(host: false, on: false, connected: false), nil),
+            ("added", chromeReport(host: true, on: true, connected: false),
+             ChromeLaneFacts(host: goodHost, seen: nil, profiles: .unknown, chromeRunning: true)),
+            ("waiting", chromeReport(host: true, on: true, connected: false),
+             ChromeLaneFacts(host: goodHost, seen: seen, profiles: .unknown, chromeRunning: false)),
+            ("waiting-chrome-open", chromeReport(host: true, on: true, connected: false),
+             ChromeLaneFacts(host: goodHost, seen: seen, profiles: .unknown, chromeRunning: true)),
+            ("cant-reach", chromeReport(host: true, on: true, connected: false),
+             ChromeLaneFacts(host: .init(present: true, missingIDs: [ChromeExtension.storeID], launcherOK: true),
+                             seen: seen, profiles: .unknown, chromeRunning: true)),
+            ("wrong-profile", chromeReport(host: true, on: true, connected: false),
+             ChromeLaneFacts(host: goodHost, seen: nil, profiles: elsewhere, chromeRunning: true)),
+            ("connected", chromeReport(host: true, on: true, connected: true), nil),
+            ("connected-file-access", chromeReport(host: true, on: true, connected: true, fileAccess: true), nil),
+            ("off", chromeReport(host: true, on: false, connected: false), nil),
+            ("update", chromeReport(host: true, on: true, connected: true, stale: true), nil)]
+        for (name, r, f) in chromeFacts {
             shoot("main-connections-chrome-\(name)", size: main,
                   ConnectionsView(conductor: conductor, mode: .services, selecting: ChromeExtension.rowID,
-                                  chrome: ChromeExtensionModel(demo: r)).background(Theme.raised))
+                                  chrome: ChromeExtensionModel(demo: r, facts: f)).background(Theme.raised))
         }
         shoot("main-reach", size: main,
               ConnectionsView(conductor: conductor, mode: .reach).background(Theme.raised))
 
+        posedConnections(conductor, only: only) { name, size, view in shoot(name, size: size, view) }
+
         print("\n\(written) written to \(directory)\(failed == 0 ? "" : ", \(failed) failed")")
         return failed == 0 ? 0 : 1
+    }
+
+    /// The window's smallest size, the size in the owner's report of
+    /// 2026-11-12, and a large one.
+    static let windowSizes: [(name: String, size: CGSize)] = [
+        ("min", CGSize(width: 820, height: 560)),
+        ("1190x790", CGSize(width: 1190, height: 790)),
+        ("large", CGSize(width: 1600, height: 1000)),
+    ]
+
+    /// The whole main window on Connections, with invented rows
+    /// (`ConnectionsPose`), at each of `windowSizes` — "posed-" renders just
+    /// these. The whole window and not the pane, because what went wrong was
+    /// the window's: a detail side taller than the glass pushed everything,
+    /// the list and the sidebar included, off the top and the bottom. Each
+    /// line printed after a name is the least height that window's pane asks
+    /// for; over the window's own height is the fault, in a number.
+    ///
+    /// Last in the run: the list stays posed afterwards, so nothing after
+    /// this may want the real one.
+    private static func posedConnections(_ conductor: Conductor, only: String,
+                                         shoot: (String, CGSize, AnyView) -> Void) {
+        let checked = Date()
+        for pose in ConnectionsPose.all {
+            for (sizeName, size) in windowSizes {
+                let name = "posed-connections-\(pose.name)-\(sizeName)"
+                guard only.isEmpty || name.contains(only) else { continue }
+                ConnectionsModel.shared.pose(ConnectionsPose.rows(pose.name))
+                let window = MainWindow(conductor: conductor, section: .connections,
+                                        selectingConnection: pose.select, connectionsChecked: checked)
+                shoot(name, size, AnyView(window))
+                report(window.content, in: CGSize(width: size.width - 186, height: size.height))
+            }
+        }
+        // The other panes the window draws, at its smallest: built the same
+        // way or not, each has to fit.
+        ConnectionsModel.shared.pose(ConnectionsPose.rows(ConnectionsPose.gmailThree))
+        for section in MainWindow.Section.sidebarItems where section != .connections {
+            let name = "posed-min-\(section.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))"
+            guard only.isEmpty || name.contains(only) else { continue }
+            let window = MainWindow(conductor: conductor, section: section)
+            shoot(name, windowSizes[0].size, AnyView(window))
+            report(window.content, in: CGSize(width: windowSizes[0].size.width - 186, height: windowSizes[0].size.height))
+        }
+        // And every Settings pane at that window's smallest (640 × 460).
+        let settingsMin = CGSize(width: 640, height: 460)
+        for section in MainWindow.Section.allCases
+        where section.place == .settings && SettingsWindow.Selection.listed(section) {
+            let name = "posed-settings-min-\(section.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))"
+            guard only.isEmpty || name.contains(only) else { continue }
+            let window = SettingsView(conductor: conductor, selection: SettingsWindow.Selection(section))
+            shoot(name, settingsMin, AnyView(window))
+            report(window.content, in: CGSize(width: settingsMin.width - 172, height: settingsMin.height))
+        }
+        // The sheet, in the steps this change is about: an "Add another" that
+        // failed (the words are the script's — here a certificate failure),
+        // one account going, gone, and a removal that failed.
+        guard let gmail = ConnectionsPose.rows(ConnectionsPose.gmailThree).first(where: { $0.id == "composio/gmail" }),
+              let account = gmail.accounts.dropFirst().first else { return }
+        let label = gmail.accountLabel(account)
+        let steps: [(String, ConnectFlow.Phase, Bool)] = [
+            ("add-failed", .failed("Couldn't reach the sign-in service: the secure connection could not be checked (SSL: CERTIFICATE_VERIFY_FAILED)."), false),
+            ("remove-working", .working("Removing \(label)…"), true),
+            ("remove-done", .done("\(label) is removed. The others stay connected."), true),
+            ("remove-failed", .failed("couldn't remove your gmail account at Composio just now (no answer) — nothing was disconnected; try again"), true),
+        ]
+        for (step, phase, removing) in steps {
+            let flow = ConnectFlow()
+            flow.pose(gmail, phase: phase, removing: removing)
+            shoot("posed-sheet-\(step)", CGSize(width: 460, height: 240),
+                  AnyView(ConnectSheet(flow: flow).background(Theme.raised)))
+        }
+    }
+
+    /// Prints the least height `pane` asks for beside the height it gets.
+    /// More than it gets is the fault, in a number: SwiftUI draws it at that
+    /// height anyway, centred, with both ends outside the window.
+    private static func report(_ pane: some View, in size: CGSize) {
+        let least = minimumSize(of: pane, width: size.width).height.rounded(.up)
+        print("  least height \(Int(least)) of \(Int(size.height))" + (least > size.height ? "  DOES NOT FIT" : ""))
+    }
+
+    /// The smallest size a view accepts at `width`: what SwiftUI reports as
+    /// its minimum, read through AppKit the way a window reads it. A pane
+    /// whose least height is more than the window gives it does not shrink —
+    /// it is drawn at that height, centred, with both ends cut off.
+    static func minimumSize(of view: some View, width: CGFloat) -> CGSize {
+        NSHostingController(rootView: view).sizeThatFits(in: CGSize(width: width, height: 0))
     }
 
     /// How long the run loop is pumped before the picture is taken.
@@ -374,6 +527,38 @@ enum SettingsSnapshot {
 
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return false }
         host.cacheDisplay(in: host.bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return false }
+        window.close()
+        return (try? data.write(to: URL(fileURLWithPath: path))) != nil
+    }
+}
+
+extension SettingsSnapshot {
+    /// The main window as the app makes it (`AppDelegate.showWindow`): a
+    /// titled window with full-size content and a transparent, hidden
+    /// title. The picture is taken of the window's frame view, not its
+    /// content view, so the traffic lights are in it.
+    static func writeTitled(_ view: some View, to path: String, size: CGSize,
+                            appearance: NSAppearance.Name) -> Bool {
+        let previous = NSApp.appearance
+        NSApp.appearance = NSAppearance(named: appearance)
+        defer { NSApp.appearance = previous }
+
+        let hosting = NSHostingController(rootView: AnyView(view))
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.appearance = NSAppearance(named: appearance)
+        window.isReleasedWhenClosed = false
+        window.setContentSize(size)
+        let frameView = window.contentView?.superview ?? hosting.view
+        frameView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(settle))
+        frameView.layoutSubtreeIfNeeded()
+
+        guard let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { return false }
+        frameView.cacheDisplay(in: frameView.bounds, to: rep)
         guard let data = rep.representation(using: .png, properties: [:]) else { return false }
         window.close()
         return (try? data.write(to: URL(fileURLWithPath: path))) != nil

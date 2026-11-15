@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Combine
+import MoeIsland
 import MoeMeeting
 import SwiftUI
 
@@ -12,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pushToTalk: PushToTalk?
     private var conductor: Conductor!
     private var island: NotchIsland!
+    /// The chat out of the notch, in a window of its own.
+    private var floatingChat: FloatingChatWindow!
+    private var floatingChatItems: [NSMenuItem] = []
+    private var floatingChatHotKey: HotKey?
     /// The magenta line around the screen while Moe drives (2026-09-24).
     private var drivingEdge: DrivingEdge?
     private var window: NSWindow?
@@ -30,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The "Sign in" items, shown only while the brain is waiting on one.
     private var signInItems: [NSMenuItem] = []
     private var signInWatch: AnyCancellable?
+    /// A Quit that is waiting for meeting notes to finish, and for them to
+    /// reach Telegram when that is on; nil otherwise.
+    private var quitAfterNotes: Timer?
+    private var quitWaitPanel: QuitWaitPanel?
+    /// "Quit Now" in that wait: the next terminate goes without asking.
+    private var quitWithoutAsking = false
     private var onboarding: OnboardingWindow?
     /// `moe://checkout?…` links that arrived before the app had started — a
     /// cold launch by the payment page. Handed over once `Conductor` exists.
@@ -42,6 +53,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // icon and menu bar, and for a day and a half one did exactly that
         // while the real Moe sat installed and unopened. It has to quit
         // before it takes the lock, or the real Moe is the one that quits.
+        //
+        // First, the one uninstalled copy that is a person's and not a
+        // developer's: a download opened from its disk image. It is offered
+        // the move to Applications instead of the refusal below, and the
+        // process ends there either way. Inert in a debug build, in Memoe
+        // Dev and for the installed app (MoveToApplications).
+        MoveToApplications.atLaunch()
         RunningFromHere.enforce()
         // Start watching for the person's own events, so a consent control
         // can tell a live person-press from a lingering one (D9.14,
@@ -105,6 +123,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // held reminder shows its card there, with Play on it, rather than
         // being read aloud by a click that landed on the glow.
         island.onOpenWindow = { [weak self] in self?.showWindow() }
+        // The same Conductor and the same draft as the notch: one
+        // conversation, drawn in whichever of the two it is in.
+        floatingChat = FloatingChatWindow(conductor: conductor, island: island)
+        island.floating = floatingChat
+        floatingChat.onOpenWindow = { [weak self] in self?.showWindow() }
+        floatingChat.onPlacementChanged = { [weak self] placement in
+            guard let self else { return }
+            self.island.placementChanged(placement, docked: !placement.isDetached)
+            self.retitleFloatingChatItems()
+        }
 
         // Collapse back to the pill rather than vanishing: "hidden" should be
         // something you choose from the menu, not the resting state. Otherwise
@@ -152,6 +180,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.island.revealReply()
         }
 
+        // Moe in your Chrome: every install before the store id was known
+        // wrote a host manifest that lets in the dev build alone, and Chrome
+        // refuses the store build silently. Adding the missing origin here
+        // heals each existing install on its first launch of this version.
+        // Only ever edits a manifest that already exists.
+        DispatchQueue.global(qos: .utility).async {
+            if case .healed(let added) = ChromeHostManifest.heal() {
+                Log.write("chrome host manifest: added \(added.joined(separator: ", ")) at launch")
+            }
+        }
+
         // Before the menus, because the "Check for Updates…" item exists only
         // if this build actually has a feed to check. A checkout build starts
         // nothing and shows nothing — see Updates.swift.
@@ -163,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         wireMeetings(config: config)
 
         watchSignIn()
+        watchConnectAnAI()
 
         conductor.startUp()
         // A payment page that launched Moe: said now that the starter runs.
@@ -197,19 +237,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // ~/.moe already) that has never signed in. Someone with a sign-in
         // already is past it; the marker is written so the keychain isn't
         // asked again.
-        if let screen = Onboarding.resumeScreen {
-            // Back from the relaunch a permission needed, mid-flow. Before
-            // the marker and the sign-in are consulted: by now the home
-            // exists and the Claude sign-in is stored, which the branch
-            // below reads as "past onboarding" — it is not.
-            Onboarding.clearResume()
+        //
+        // A welcome that was closed, quit or crashed part-way is not past
+        // it either: the screen it was on is on disk, and it opens there.
+        // Read before the sign-in is consulted — mid-flow the home exists
+        // and a sign-in may be stored, which would otherwise read as "past
+        // onboarding". Only finishing clears it (Onboarding.record).
+        let resume = Onboarding.resumeScreen
+        switch Onboarding.atLaunch(done: Onboarding.done, resume: resume, firstRun: firstRun,
+                                   signedIn: HermesKey.childOAuthTokenExists()) {
+        case .welcome(let screen):
             showOnboarding(at: screen)
-        } else if Onboarding.done {
+        case .mainWindow:
             showWindow()
             askAboutBackgroundLearning()
-        } else if firstRun || !HermesKey.childOAuthTokenExists() {
-            showOnboarding()
-        } else {
+        case .markDoneThenMainWindow:
             Onboarding.markDone()
             showWindow()
             askAboutBackgroundLearning()
@@ -269,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// First launch: one small window, one step at a time. It ends on the
     /// Connections pane of the main window.
-    private func showOnboarding(at screen: Onboarding.Screen = .welcome) {
+    private func showOnboarding(at screen: Onboarding.Screen = .welcome, replay: Bool = false) {
         let w = OnboardingWindow(conductor: conductor)
         w.onOpenConnections = { [weak self] in
             self?.showWindow()
@@ -278,7 +320,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // The brain screen's "set it up yourself" paths (a key, a model on
         // this Mac) need the pane that has the fields, not a second copy of
-        // them inside a window that is about to close.
+        // them. The welcome stays open behind it and carries on at Say
+        // hello once the brain answers (Onboarding.BrainHandoff).
         w.onOpenSection = { [weak self] section in
             self?.showWindow()
             NotificationCenter.default.post(name: .moeShowSection, object: nil,
@@ -293,7 +336,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Log.write("login item at the end of the welcome: \(outcome)")
         }
         w.onFinished = { [weak self] in
-            Onboarding.markDone()
+            // Done is the window's to record, and only when the welcome was
+            // finished (Onboarding.record): a close part-way leaves the
+            // screen to come back to instead.
             self?.onboarding = nil
             // Closed early, or finished: either way the main window is
             // what comes next, never nothing.
@@ -301,12 +346,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.askAboutBackgroundLearning()
         }
         onboarding = w
-        if screen == .welcome {
-            w.show()
+        var pose = OnboardingView.Pose()
+        pose.step = screen
+        w.show(pose: pose, replay: replay)
+    }
+
+    /// Moe menu › Show welcome again. On a Mac that finished it, from the
+    /// top, and closing it changes nothing; on one that did not, where it
+    /// was left.
+    @objc private func showWelcomeAgain() {
+        if let onboarding { onboarding.bringToFront(); return }
+        if Onboarding.done {
+            showOnboarding(at: .welcome, replay: true)
         } else {
-            var pose = OnboardingView.Pose()
-            pose.step = screen
-            w.show(pose: pose)
+            showOnboarding(at: Onboarding.resumeScreen ?? .welcome)
+        }
+    }
+
+    /// A question was asked with no AI connected (Conductor posts this): the
+    /// place to connect one opens. Not over the welcome, whose own screen
+    /// says the same thing and has the sign-in a step back.
+    private func watchConnectAnAI() {
+        NotificationCenter.default.addObserver(forName: .moeConnectAnAI, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.onboarding == nil else { return }
+                self.signIn()
+            }
         }
     }
 
@@ -347,6 +412,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 _ = conductor.cloud.open(url, conductor: conductor)
             }
         }
+    }
+
+    /// Quit with a meeting on the record asks first: `shutDown` abandons the
+    /// meeting, and that used to cost the notes without a word
+    /// (`QuitDuringMeeting`).
+    ///
+    /// "Write the notes, then quit" cancels this quit and quits again when
+    /// the notes are down, rather than answering `.terminateLater`: AppKit
+    /// spins the run loop in the modal-panel mode while it waits for that
+    /// reply, and the timers and default-mode work the finish leans on do
+    /// not run there.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if quitWithoutAsking { return .terminateNow }
+        guard let conductor, case .ask(let question) = QuitDuringMeeting.decide(meeting: conductor.meeting) else {
+            return .terminateNow
+        }
+        endQuitWait()
+        switch QuitDuringMeeting.ask(question) {
+        case .quitAnyway:
+            Log.write("quit: with a meeting \(question == .recording ? "recording" : "being written up") — the person chose to quit anyway")
+            return .terminateNow
+        case .cancel:
+            return .terminateCancel
+        case .notesThenQuit:
+            if question == .recording { conductor.stopMeeting() }
+            // Nothing took the meeting to "writing notes" — there are none
+            // to wait for.
+            if conductor.meeting.isRecording { return .terminateNow }
+            Log.write("quit: waiting for the meeting notes, then quitting")
+            waitThenQuit(conductor)
+            return .terminateCancel
+        }
+    }
+
+    /// Looks four times a second until `QuitDuringMeeting.next` says go: the
+    /// notes down, and the copy for Telegram sent, failed, or twenty seconds
+    /// late. A small window says which it is waiting for.
+    private func waitThenQuit(_ conductor: Conductor) {
+        var waiting = QuitDuringMeeting.Waiting()
+        let panel = QuitWaitPanel { [weak self] in
+            Log.write("quit: the person chose Quit Now while Memoe was waiting")
+            self?.endQuitWait()
+            self?.quitWithoutAsking = true
+            NSApp.terminate(nil)
+        }
+        quitWaitPanel = panel
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self, weak conductor] _ in
+            MainActor.assumeIsolated {
+                guard let self, let conductor, self.quitAfterNotes != nil else { return }
+                switch QuitDuringMeeting.next(meeting: conductor.meeting,
+                                              delivering: conductor.meetingDeliveryInFlight,
+                                              waiting: &waiting) {
+                case .wait(let what):
+                    panel.say(what)
+                case .quit(let why):
+                    Log.write("quit: \(why) — quitting")
+                    self.endQuitWait()
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        quitAfterNotes = timer
+    }
+
+    private func endQuitWait() {
+        quitAfterNotes?.invalidate()
+        quitAfterNotes = nil
+        quitWaitPanel?.close()
+        quitWaitPanel = nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -426,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         moeMenu.addItem(withTitle: "Talk to Moe  (\(shortcut))",
                         action: #selector(talk), keyEquivalent: "").target = self
         moeMenu.addItem(withTitle: "New Conversation", action: #selector(newConversation), keyEquivalent: "n").target = self
+        moeMenu.addItem(floatingChatItem())
         moeMenu.addItem(.separator())
         let meetingItem = NSMenuItem(title: "Start meeting", action: #selector(toggleMeeting), keyEquivalent: "")
         meetingItem.target = self
@@ -440,6 +576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         moeMenu.addItem(.separator())
         moeMenu.addItem(signInMenuItem())
         moeMenu.addItem(withTitle: "Show Window", action: #selector(showWindowAction), keyEquivalent: "0").target = self
+        moeMenu.addItem(withTitle: "Show Welcome Again", action: #selector(showWelcomeAgain), keyEquivalent: "").target = self
         moeMenu.addItem(withTitle: "Hide Island", action: #selector(hideIsland), keyEquivalent: "").target = self
         moeItem.submenu = moeMenu
         main.addItem(moeItem)
@@ -470,6 +607,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return [shot, clip]
     }
 
+    /// "Pop Out Chat", "Show Chat Window" or "Put Chat Back in the Notch":
+    /// whatever ⌃⌥P would do now.
+    private func floatingChatItem() -> NSMenuItem {
+        let item = NSMenuItem(title: FloatingChat.menuTitle(floatingChat.placement, shortcut: FloatingChatWindow.shortcut),
+                              action: #selector(toggleFloatingChat), keyEquivalent: "")
+        item.target = self
+        floatingChatItems.append(item)
+        return item
+    }
+
+    private func retitleFloatingChatItems() {
+        let title = FloatingChat.menuTitle(floatingChat.placement, shortcut: FloatingChatWindow.shortcut)
+        for item in floatingChatItems { item.title = title }
+    }
+
+    @objc private func toggleFloatingChat() { floatingChat.handle(.toggle) }
+
     @objc private func takeMeetingScreenshot() { conductor.captureScreenshot(trigger: .user) }
     @objc private func toggleMeetingClip() { conductor.toggleMeetingClip(trigger: .user) }
 
@@ -483,6 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let shortcut = HotKey.describe(keyCode: config.hotKeyCode, modifiers: config.hotKeyModifiers)
         menu.addItem(withTitle: "Talk to Moe  (\(shortcut))", action: #selector(talk), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Open Memoe", action: #selector(showWindowAction), keyEquivalent: "").target = self
+        menu.addItem(floatingChatItem())
         menu.addItem(signInMenuItem())
         menu.addItem(.separator())
         let meetingItem = NSMenuItem(title: "Start meeting", action: #selector(toggleMeeting), keyEquivalent: "")
@@ -522,7 +677,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard escapeMonitor == nil else { return }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53, let self else { return event }
-            let inMoe = event.window.map { $0 === self.window || self.island?.owns($0) == true } ?? false
+            let inMoe = event.window.map {
+                $0 === self.window || self.island?.owns($0) == true || self.floatingChat?.owns($0) == true
+            } ?? false
             guard inMoe, event.window?.isKeyWindow == true else { return event }
             return self.conductor.escapePressedInMoe() ? nil : event
         }
@@ -628,6 +785,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
             self.talk()
+        }
+        // ⌃⌥P: the chat out of the notch and back (`FloatingChatWindow.shortcut`).
+        floatingChatHotKey = HotKey(keyCode: UInt32(kVK_ANSI_P), modifiers: 6144) { [weak self] in
+            Log.write("chat window hotkey fired")
+            self?.floatingChat.handle(.toggle)
+        }
+        if floatingChatHotKey == nil {
+            Log.write("CHAT WINDOW HOTKEY REGISTRATION FAILED — another app owns \(FloatingChatWindow.shortcut)")
         }
         Log.write(hotKey == nil
             ? "HOTKEY REGISTRATION FAILED (\(config.hotKeyCode)/\(config.hotKeyModifiers)) — another app owns it"
@@ -863,19 +1028,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// The About box, in the words the rest of the app uses. It names the
+    /// AI this Mac is actually set to think with — it used to name one
+    /// vendor's subscription whatever had been chosen.
+    nonisolated static func aboutText(brain: String, shortcut: String) -> String {
+        """
+        A personal assistant that lives on this Mac.
+
+        Your voice is turned into words here, on this Mac. Thinking is done by \
+        the AI you connect — right now that is \(brain); Settings › Brain \
+        changes it. What Moe remembers about you is in the Memory tab, in plain \
+        writing you can read and change.
+
+        Press \(shortcut) to talk. ⌘Q to quit.
+        """
+    }
+
     @objc private func about() {
         let alert = NSAlert()
         alert.messageText = "Memoe"
-        alert.informativeText = """
-        A personal assistant that runs on this Mac.
-
-        Speech in and out is on-device (Parakeet and Kokoro on the Neural Engine). \
-        Thinking runs through Hermes Agent on this Mac, which drives Claude Code \
-        on your Claude subscription. Your memory lives in ~/.moe and ~/.hermes as \
-        plain markdown you can read and edit.
-
-        Press \(HotKey.describe(keyCode: conductor.config.hotKeyCode, modifiers: conductor.config.hotKeyModifiers)) to talk. ⌘Q to quit.
-        """
+        alert.informativeText = Self.aboutText(
+            brain: conductor.config.brainProvider.shortName,
+            shortcut: HotKey.describe(keyCode: conductor.config.hotKeyCode, modifiers: conductor.config.hotKeyModifiers))
         alert.runModal()
     }
 }

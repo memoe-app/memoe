@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import MoeBrain
 import MoeChat
@@ -37,6 +38,12 @@ struct Turn: Identifiable, Equatable {
     /// of each tool call, not off the reply, so they are where it actually
     /// went. Shown as links you can click; never spoken.
     var links: [ReplyLinks.Link] = []
+    /// The model's own thinking before this answer, when the provider
+    /// streamed it. Folded inside the steps.
+    var thinking: String = ""
+    /// A note saying the brain did not answer: the one note that offers
+    /// Retry.
+    var failed: Bool = false
     /// Photos and files handed over with this turn. Only ever on yours.
     var attachments: [ChatAttachment] = []
     /// What Moe learned from what the person said just before this answer
@@ -152,11 +159,28 @@ final class Conductor: ObservableObject {
     /// Panes the brain opened, with the person turn: at most once per turn.
     private var panesOpened: [String: Int] = [:]
     private var openSettingsObserver: NSObjectProtocol?
+    /// `moe_location`'s app half (Location/LocationBridge.swift).
+    let location = LocationBridge()
+    /// `moe_settings_change` / `_show`'s app half (Settings/SettingsBridge.swift).
+    let settingsBridge = SettingsBridge()
+    private var settingsPublish: AnyCancellable?
     /// Asks macOS whether Automation is really off for an app before a
     /// `tcc_automation` card is shown (`AutomationConsent`). A seam for tests.
     var automationConsent: (String) -> AutomationConsent = AutomationConsent.live(appName:)
     @Published private(set) var voiceReady = false
+    /// The microphone is not working (every restart failed, or it runs
+    /// and sends nothing). Read by the sidebar's voice dot, which used to
+    /// say "Voice ready" over a dead microphone for an hour (2026-11-13).
+    @Published private(set) var microphoneDead = false
+    /// The sidebar's voice dot: the models *and* the microphone.
+    var voiceStatus: (ok: Bool, text: String) {
+        VoiceStatus.sidebar(modelsReady: voiceReady, microphoneDead: microphoneDead)
+    }
     @Published private(set) var alwaysListening = false
+    /// The follow-up window: Moe has answered and the microphone stays open
+    /// in case you go on, but nobody is speaking. `mode` says `.listening`
+    /// all the same; a floating capsule shows it as rest (`IslandEars`).
+    @Published private(set) var betweenTurns = false
     /// True while a back-and-forth is in progress — drives "your turn" in the UI.
     @Published private(set) var inConversation = false {
         // The live transcript lasts one conversation. It used to stay on until
@@ -233,6 +257,18 @@ final class Conductor: ObservableObject {
     /// Memory's "Answer" puts Moe's own question here. Chat takes it and
     /// clears it.
     @Published var chatDraft: String?
+    /// Photos and files that go with `chatDraft`: what was waiting in the
+    /// notch's box when ⌘J handed the conversation to the window.
+    @Published var chatDraftAttachments: [ChatAttachment] = []
+
+    /// The notch or the floating window hands the conversation to the Chat
+    /// page (⌘J, or the window button): the conversation is the same one,
+    /// and what was half-typed there, words and files, waits in Chat's box.
+    func handOffDraft(text: String, attachments: [ChatAttachment]) {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !attachments.isEmpty { chatDraftAttachments += attachments }
+        if !words.isEmpty { chatDraft = text }
+    }
     /// True from the first tool call of a turn until the turn ends: Moe may
     /// be moving the cursor and clicking, so the island must stay out of the way.
     @Published private(set) var acting = false
@@ -473,7 +509,7 @@ final class Conductor: ObservableObject {
     /// The ⌃⌥M setting changed.
     var onMeetingHotkeyChanged: ((Bool) -> Void)?
 
-    private var nudgeTimer: Timer?
+    private var nudgeWatch: FileWatch?
     /// The beat the island shows "typing…" after a paste. Cancelled if the
     /// key goes down again before it ends, so a quick second dictation is
     /// not swallowed.
@@ -534,6 +570,8 @@ final class Conductor: ObservableObject {
     /// Pages opened since the last reply began, waiting to be attached to
     /// the turn they belong to. Same life as `pendingTools`.
     private var pendingLinks: [ReplyLinks.Link] = []
+    /// Thinking streamed since the last reply began. Same life again.
+    private var pendingThinking = ""
     /// The screenshot taken as the agent key went down, for the next turn.
     private let screen = ScreenContext()
     /// The capture the reply in flight was shown, so its `[POINT:…]` tags
@@ -590,6 +628,36 @@ final class Conductor: ObservableObject {
     private func dropQueued() {
         queuedTyped = nil
         queuedAttachments = []
+    }
+
+    /// Moe is on a job: before the first word, or any step after it. What
+    /// turns send into ■ on every surface (the owner, 2026-11-13).
+    var isWorking: Bool { mode == .thinking || acting }
+
+    /// The held message's ✕: it is not sent.
+    func cancelQueued() {
+        guard queuedTyped != nil else { return }
+        Log.write("queued message cancelled by hand")
+        dropQueued()
+    }
+
+    /// The held message's Edit: it comes back out, to go into the box again.
+    func takeBackQueued() -> (text: String, attachments: [ChatAttachment])? {
+        guard let text = queuedTyped else { return nil }
+        let files = queuedAttachments
+        dropQueued()
+        return (text, files)
+    }
+
+    /// The held message's "Send now": stop the job it was waiting on and
+    /// send it at once.
+    func sendQueuedNow() {
+        guard let held = takeBackQueued() else { return }
+        Log.write("queued message sent now — stopping the turn it waited on")
+        stopEverything()
+        DispatchQueue.main.async { [weak self] in
+            self?.submit(held.text, origin: .typed, starter: .person, attachments: held.attachments)
+        }
     }
     /// While a reply is owed, the Mac is asked not to idle-sleep. Every
     /// path that ends a turn writes `awaitingReply`, so the `didSet` above
@@ -792,6 +860,10 @@ final class Conductor: ObservableObject {
                 self.speakReadySentences()
                 self.armSpeechStall()
 
+            case .reasoningDelta(let t):
+                guard !self.replyIsAbandoned else { return }
+                self.pendingThinking += t
+
             case .toolStarted(let toolName, let id, let emoji, let detail, let spoken):
                 guard !self.replyIsAbandoned else { return }
                 // Hermes's icon for that tool, straight off the wire. It is
@@ -938,6 +1010,9 @@ final class Conductor: ObservableObject {
                 if self.turnOrigin == .spoken, self.turnStarter == .person, end == .answered {
                     self.cloud.spokenTurnAnswered()
                 }
+                // The first answer to anything a person said or typed
+                // (`CloudLink.personTurnAnswered`).
+                if self.turnStarter == .person, end == .answered { self.cloud.personTurnAnswered() }
                 // File the thread on every completed exchange rather than on
                 // quit alone: a crash or a force-quit must not cost the
                 // conversation you just had.
@@ -983,6 +1058,7 @@ final class Conductor: ObservableObject {
                 self.turns.append(Turn(role: .system, text: text))
 
             case .error(let message):
+                let asked = self.awaitingReply
                 self.awaitingReply = false
                 self.speechStall?.cancel(); self.speechStall = nil
                 // Said, not only written, when the question was spoken: a
@@ -991,20 +1067,30 @@ final class Conductor: ObservableObject {
                 // (`SpokenError`). Queued before the reply is called
                 // finished, so the window opens after it has been heard.
                 if self.replySpeaks, !self.replyAbandoned, self.quietWork.speaks(.interim) {
-                    self.voice.speak(SpokenError.line(for: message))
+                    self.voice.speak(SpokenError.line(for: message, needsSignIn: self.needsSignIn))
                 }
+                // Asked with no AI connected: the place to connect one opens.
+                if asked, self.needsSignIn { NotificationCenter.default.post(name: .moeConnectAnAI, object: nil) }
                 self.voice.replyFinished()
                 self.acting = false
                 self.drivingApp = nil
                 self.browsing = false
                 self.statusLine = ""
-                self.turns.append(Turn(role: .system, text: message))
+                var note = Turn(role: .system, text: message)
+                note.failed = asked
+                self.turns.append(note)
                 if self.mode == .thinking { self.mode = .idle }
                 // A question that got an error is still an answer to the
                 // question. §5: silence is the one thing this must not be.
                 self.announce(self.replySignal.ended(message, failed: true))
 
             case .failedToLaunch(let message):
+                // A question was waiting and no AI is connected: said, and
+                // the place to connect one opened — it used to be silence.
+                if self.awaitingReply, message.hasPrefix(HermesKey.needSignInPrefix) {
+                    if self.replySpeaks { self.voice.speak(SpokenError.connectAnAI) }
+                    NotificationCenter.default.post(name: .moeConnectAnAI, object: nil)
+                }
                 self.awaitingReply = false
                 self.speechStall?.cancel(); self.speechStall = nil
                 self.voice.replyFinished()
@@ -1149,6 +1235,24 @@ final class Conductor: ObservableObject {
             self.onWantsIsland?(true)
         }
 
+        // A dead microphone is a state, not a turn: one quiet status line
+        // and the sidebar's dot, said when it changes. It used to come
+        // through `onError` — a bubble in the conversation, raw
+        // AVFoundation text included, once per hold press that failed
+        // (docs/INBOX-QUIET.md: Moe-about-Moe is never noise in the thread).
+        var micLine = ""
+        voice.onMicrophoneHealth = { [weak self] dead, message in
+            guard let self else { return }
+            self.microphoneDead = dead
+            if dead {
+                micLine = message ?? ""
+                if !micLine.isEmpty { self.statusLine = micLine }
+            } else {
+                if !micLine.isEmpty, self.statusLine == micLine { self.statusLine = "" }
+                micLine = ""
+            }
+        }
+
         // Not an error: the turn goes on, in another voice. Written into the
         // conversation so it is read, and never spoken over the reply.
         voice.onNotice = { [weak self] message in
@@ -1159,8 +1263,16 @@ final class Conductor: ObservableObject {
             self.onWantsIsland?(true)
         }
 
+        var loadLine = ""
         voice.onLoadProgress = { [weak self] s in
-            guard let self, !s.isEmpty else { return }
+            guard let self else { return }
+            // Empty is "ready": take the warm-up line down, and only that
+            // line — it used to stay up until something else replaced it.
+            guard !s.isEmpty else {
+                if self.statusLine == loadLine { self.statusLine = "" }
+                return
+            }
+            loadLine = s
             self.statusLine = s
         }
 
@@ -1228,6 +1340,7 @@ final class Conductor: ObservableObject {
         } else if !replyHeldByKey {
             voicedTurnID = nil
         }
+        betweenTurns = s == .followUp || s == .attending(.followUp)
         switch s {
         case .off, .standby, .suspended:
             // A typed turn's reply may still be on its way (its sentences
@@ -1388,15 +1501,17 @@ final class Conductor: ObservableObject {
     /// continuation runs.
     private var continuationBase: String?
 
-    /// The brief as the brain has already been told it, and which session it
-    /// was told in.
+    /// The brief as the brain has already been told it, section by section,
+    /// and which session it was told in (`BriefLedger`).
     ///
     /// Keyed by session id rather than cleared at each of the six places that
     /// abandon a conversation, because a seventh will be written and will not
     /// know to clear this. Rotating the session id is what "the model has not
     /// heard any of this" actually means, and every one of those paths does it
     /// already. See CLAUDE.md on guards that enumerate their cases.
-    private var briefSentTo: (session: String, brief: String)?
+    private var briefLedger = BriefLedger()
+    /// Which session has read the delivery reminder in full; same keying.
+    private var deliveryReminderLedger = BrainPrompt.DeliveryReminderLedger()
 
     /// A note for the brain's next turn: where the last reply was cut.
     private var interruptionNote: String?
@@ -1532,10 +1647,12 @@ final class Conductor: ObservableObject {
     }
 
 
-    /// Poll for anything the background job decided is worth your attention.
+    /// Told when the background job has written something worth your
+    /// attention (`FileWatch` on the home: `nudge.json` appearing, and once a
+    /// minute regardless). It was a read every twenty seconds.
     private func watchForNudges() {
-        nudgeTimer?.invalidate()
-        let t = Timer(timeInterval: 20, repeats: true) { [weak self] _ in
+        nudgeWatch?.stop()
+        let w = FileWatch(directory: Paths.home, accepting: { $0 == "nudge.json" }) { [weak self] in
             Task { @MainActor in
                 // Not while a meeting is on the island. A nudge lights the
                 // notch amber and is claimed by a click — but during a
@@ -1569,14 +1686,15 @@ final class Conductor: ObservableObject {
                 // later be closed, snoozed or muted. Going through the one
                 // door is also what clears `pendingNudgeHandle`, so this
                 // never inherits the previous pulse's follow-up.
-                self.queueReminder(text)
+                self.queueReminder(text, origin: InboxGate.Origin(moment: true))
                 // In the inbox now, where it stays until it is finished; the
                 // file is spent. Left in place it came back every 20 s.
                 try? FileManager.default.removeItem(at: url)
             }
+            return false
         }
-        RunLoop.main.add(t, forMode: .common)
-        nudgeTimer = t
+        w.start()
+        nudgeWatch = w
     }
 
     // MARK: - Offers (docs/PROACTIVE-MEMORY.md §4.8)
@@ -1817,25 +1935,29 @@ final class Conductor: ObservableObject {
 
     // MARK: - Noted · Undo
 
-    private var notedTimer: Timer?
+    private var notedWatch: FileWatch?
     private var notedSeen = Set<String>()
     private var notedStamp: Date?
 
     /// Pick up what per-turn learning noted (`NotedLog`) and put it under
-    /// the answer it followed. Every three seconds, and only past a stat
+    /// the answer it followed. When the file changes (`FileWatch` on its
+    /// directory; it was a stat every three seconds), and only past a stat
     /// while the file is unchanged. Whatever is in the file at launch is
     /// history and is marked seen without being shown.
     private func watchForNoted() {
-        notedTimer?.invalidate()
+        notedWatch?.stop()
         if let data = try? Data(contentsOf: NotedLog.url) {
             notedSeen = Set(NotedLog.parse(data).map(\.claim))
         }
         notedStamp = Self.modified(NotedLog.url)
-        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+        let name = NotedLog.url.lastPathComponent
+        let w = FileWatch(directory: NotedLog.url.deletingLastPathComponent(),
+                          accepting: { $0 == name }) { [weak self] in
             Task { @MainActor in self?.readNoted() }
+            return false
         }
-        RunLoop.main.add(t, forMode: .common)
-        notedTimer = t
+        w.start()
+        notedWatch = w
     }
 
     private static func modified(_ url: URL) -> Date? {
@@ -1878,9 +2000,9 @@ final class Conductor: ObservableObject {
         }
     }
 
-    private var inboxTimer: Timer?
+    private var inboxWatch: FileWatch?
 
-    /// Poll for a reminder Hermes delivered to this screen.
+    /// Told when Hermes delivers a reminder to this screen.
     ///
     /// Same surface as a nudge: the notch pulses amber, hovering shows the
     /// words, Play speaks them. A reminder is something you asked for, but
@@ -1892,15 +2014,24 @@ final class Conductor: ObservableObject {
     ///
     /// The files come from the moe-screen Hermes plugin (`~/.moe/inbox/`),
     /// which is where `deliver: moe` goes — every cron job Moe makes, the
-    /// proactive pass, a failed background job. Five seconds, because a
-    /// reminder set for a time should not be up to twenty seconds late.
+    /// proactive pass, a failed background job. The directory is watched
+    /// (`FileWatch`), so a reminder set for a time is on the island within
+    /// the second; it was a read and a parse every five seconds, all day.
+    /// While a file is still waiting (a helper's result, for a quiet moment
+    /// or for its conversation) it is asked about every five seconds as
+    /// before, because what it waits for is not a file changing; and once a
+    /// minute regardless, which is also when snoozes come due.
     private func watchForInbox() {
-        inboxTimer?.invalidate()
-        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.drainInbox() }
+        inboxWatch?.stop()
+        let w = FileWatch(directory: ReminderChannels.inbox, accepting: { $0.hasSuffix(".json") },
+                          createIfMissing: true) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.drainInbox()
+                return ReminderChannels.hasWaiting()
+            }
         }
-        RunLoop.main.add(t, forMode: .common)
-        inboxTimer = t
+        w.start()
+        inboxWatch = w
     }
 
     /// Helper results waiting for a conversation that is not on screen,
@@ -1961,7 +2092,8 @@ final class Conductor: ObservableObject {
             if age > 24 * 3600 {
                 if !m.expiredText.isEmpty {
                     Log.write("reminder: a held send expired unanswered (\(Int(age / 3600)) h old)")
-                    queueReminder(m.expiredText, earlierAt: nil, handle: nil)
+                    queueReminder(m.expiredText, earlierAt: nil, handle: nil,
+                                  origin: InboxGate.Origin(consequence: true))
                 } else {
                     Log.write("reminder dropped (\(Int(age / 3600)) h old): \(m.text.prefix(80))")
                 }
@@ -2143,6 +2275,7 @@ final class Conductor: ObservableObject {
         streamingTurnID = id
         pendingTools = turns[idx].tools
         pendingLinks = turns[idx].links
+        pendingThinking = turns[idx].thinking
         replyAbandoned = false
         awaitingFirstToken = true
         pointParser = PointTagParser()
@@ -2171,7 +2304,7 @@ final class Conductor: ObservableObject {
     }
 
     func queueReminder(_ text: String, earlierAt: Date? = nil,
-                       handle: NudgeHandle? = nil) {
+                       handle: NudgeHandle? = nil, origin: InboxGate.Origin = InboxGate.Origin()) {
         // A job's own failure notice is never shown, at any age. Moe is not
         // a technical product and these are not written for a person: an
         // exit code, a stderr tail, a traceback, and a job name nobody
@@ -2198,7 +2331,7 @@ final class Conductor: ObservableObject {
             input.expiredText = handle.expiredText
             input.openThread = handle.openThread
         }
-        receiveNotice(input, expiresAt: handle?.expiresAt)
+        receiveNotice(input, expiresAt: handle?.expiresAt, origin: origin)
     }
 
     /// What the thing on the island can be changed through.
@@ -2325,7 +2458,8 @@ final class Conductor: ObservableObject {
         pendingNudgeWhen = nil
         pendingNudgeHandle = nil
         if sayWhy {
-            queueReminder(handle.expiredText, earlierAt: nil, handle: nil)
+            queueReminder(handle.expiredText, earlierAt: nil, handle: nil,
+                          origin: InboxGate.Origin(consequence: true))
         } else {
             onWantsIsland?(false)
         }
@@ -2533,7 +2667,7 @@ final class Conductor: ObservableObject {
         guard InstanceLock.acquire() else {
             let who = InstanceLock.holderDescription
             Log.write("not starting the brain or the mic: \(who) already runs Moe")
-            statusLine = "Another Moe is already running"
+            statusLine = "Memoe is already running"
             return
         }
         lastStartAt = Date()
@@ -2546,6 +2680,8 @@ final class Conductor: ObservableObject {
         watchForLock()
         watchForConfirm()
         watchForOpenSettings()
+        watchForLocation()
+        watchForSettings()
         startMeetingWatcher()
         // Memoe's cloud, when this build has one: the sync, Away's starter,
         // a problem report still owed, the away machine's brain, and the
@@ -3346,7 +3482,10 @@ final class Conductor: ObservableObject {
         // silently held nothing (measured with the reader: 23:30 tonight
         // quiet, 07:59 tomorrow not, on a file from this morning).
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.writePresence(); self?.writeTimeZone(); self?.sayStillHere() }
+            Task { @MainActor in
+                self?.writePresence(); self?.writeTimeZone(); self?.sayStillHere()
+                self?.startFreshIfIdle()
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         presenceTimer = t
@@ -3598,7 +3737,7 @@ final class Conductor: ObservableObject {
             // one before the reset, or the next session would start on the
             // old model while the probe (which names the model itself) passes.
             let before = bridge.brainFingerprint
-            bridge.apply(brain: BrainSelection(config: config))
+            applyChatBrain()
             if bridge.brainFingerprint != before {
                 // A new model: the same conversation, on a session of the
                 // new model's. The derived id changes with the model, so
@@ -3716,6 +3855,7 @@ final class Conductor: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, ObjectIdentifier(self.bridge) == freshID else { return }
                 self.lastStartAt = Date()
+                self.applyChatBrain()
                 // `resume` starts it: on the thread's session, primed or
                 // warmed up, never on a random one first.
                 self.bridge.resume(self.conversationLedger.resume(
@@ -3947,6 +4087,7 @@ final class Conductor: ObservableObject {
         guard !awaitingReply else { return }
         pendingTools.removeAll()
         pendingLinks.removeAll()
+        pendingThinking = ""
         spokenUpTo = ""
         quietWork.reset()
         workingSilently = false
@@ -4038,7 +4179,7 @@ final class Conductor: ObservableObject {
     /// Carbon hotkey is registered once at startup.
     func setHotKeyModifiers(_ mods: UInt32) {
         config = Config.update { $0.hotKeyModifiers = mods }
-        statusLine = "shortcut saved — restart Moe to use it"
+        statusLine = "shortcut saved — restart Memoe to use it"
     }
 
     /// The language Moe listens for. Warms the engine that language needs in
@@ -4497,7 +4638,11 @@ final class Conductor: ObservableObject {
         // measurement said so: 42 of 44 turns with three or more tool calls
         // ran silent to the end. Constant text, so it does not respawn the
         // child the way a changing brief would.
-        shaped += "\n\n" + BrainPrompt.deliveryReminder
+        //
+        // In full once per brain session, then the short form: the full text
+        // stays in the transcript, and forty copies of it were the context
+        // (see `BrainPrompt.deliveryReminderShort`).
+        shaped += "\n\n" + deliveryReminderLedger.reminder(for: bridge.currentSessionID)
         // How much to say, when the person has chosen something other than
         // the default. After the reminder so it is the last word on length,
         // and never in a meeting, whose block already says "briefly".
@@ -4511,21 +4656,26 @@ final class Conductor: ObservableObject {
         // where the system prompt only ever held whatever the brief said when
         // the child was last spawned.
         //
-        // Only when it has changed, and only once per session. `sync.sh`
-        // rewrites the brief every ten minutes, so on a busy conversation
-        // this is a handful of turns an hour; every other turn adds nothing.
-        // Sending it unconditionally was the first version of this and it was
-        // worse than what it replaced: 8.8 KB per turn, kept in the
-        // transcript, so turn ten carried ten copies of it — a bigger bill
-        // than the respawn, paid on every turn instead of 11% of them.
-        if let brief = BrainPrompt.briefBlock() {
-            let session = bridge.currentSessionID
-            if briefSentTo?.session != session || briefSentTo?.brief != brief {
-                briefSentTo = (session, brief)
-                // Compared without its age (above), sent with it: the brief's
-                // times are as of when sync.sh wrote it, and the Now line at
-                // the top of this turn is the clock (ticket #9).
-                shaped = BrainPrompt.dated(brief, gathered: BrainPrompt.briefWrittenAt(),
+        // Whole the first time a session sees it; after that only the parts
+        // whose words changed, and nothing when only `sync.sh`'s stamps moved
+        // (`BriefLedger`). Sending it unconditionally was the first version
+        // of this: 8.8 KB per turn, kept in the transcript, so turn ten
+        // carried ten copies. Sending it whole "when it changed" was the
+        // second, and it changes every ten minutes by its timestamp alone:
+        // 288 whole copies over 1,325 measured turns, 16% of what those
+        // conversations re-read on every turn after.
+        if let text = try? String(contentsOf: Paths.brief, encoding: .utf8) {
+            let block: String?
+            switch briefLedger.next(brief: text, session: bridge.currentSessionID) {
+            case .nothing:          block = nil
+            case .full(let all):    block = BrainPrompt.briefBlock(all)
+            case .update(let some): block = BrainPrompt.briefUpdateBlock(some)
+            }
+            if let block {
+                // Sent with its age: the brief's times are as of when sync.sh
+                // wrote it, and the Now line at the top of this turn is the
+                // clock (ticket #9).
+                shaped = BrainPrompt.dated(block, gathered: BrainPrompt.briefWrittenAt(),
                                            now: TurnClock.now(), zone: TurnClock.zone())
                     + "\n\n---\n\n" + shaped
             }
@@ -4602,7 +4752,12 @@ final class Conductor: ObservableObject {
             let logged = attachments.isEmpty ? trimmed
                 : "\(trimmed) [+\(attachments.count) attached]".trimmingCharacters(in: .whitespaces)
             self.bridge.send(note.isEmpty ? outgoing : note + "\n\n" + outgoing,
-                             images: images, silent: false, logAs: logged, starter: starter)
+                             images: images, silent: false, logAs: logged, starter: starter,
+                             // Said aloud by the person, who is now waiting to
+                             // hear something: the brain may open it quickly.
+                             // Never a typed turn, never one Moe raised itself.
+                             spoken: origin == .spoken && starter == .person
+                                 && self.config.spokenTurnsOpenQuick)
         }
     }
 
@@ -4640,11 +4795,34 @@ final class Conductor: ObservableObject {
         lastStartAt = Date()
         mode = .idle
         statusLine = "starting a fresh conversation"
+        applyChatBrain()
         // Like reset(), but on the session id this thread will keep — so
         // reopening it later resumes rather than replays.
         bridge.resume(conversationLedger.resume(
             thread: conversationID, brain: bridge.brainFingerprint,
             startedAt: conversationStartedAt))
+    }
+
+    /// The island's panel is showing (peek or open), as `NotchIsland` last
+    /// applied it.
+    var islandOpen = false
+
+    /// An hour untouched: file this conversation in Chat and start a fresh
+    /// one, so the next question does not re-send the whole thread
+    /// (`ConversationFreshness`). Checked on the minute by the presence
+    /// timer, against the wall clock, so it holds across sleep. The fresh
+    /// session's warm-up runs now, while nobody waits on it.
+    func startFreshIfIdle() {
+        let busy = awaitingReply || mode != .idle || inConversation || dictation != .off
+            || meeting.isRecording || replyingTo != nil || noticeReturn != nil
+            || queuedTyped != nil || !partial.isEmpty
+        let situation = ConversationFreshness.Situation(
+            lastActivity: turns.last?.at, now: Date(), busy: busy,
+            watched: islandOpen || NSApp.isActive)
+        guard ConversationFreshness.shouldStartFresh(situation) else { return }
+        let idle = Int(Date().timeIntervalSince(turns.last?.at ?? Date()) / 60)
+        Log.write("conversation: untouched \(idle) min; filed in Chat, starting a fresh one")
+        newConversation()
     }
 
     // MARK: - A turn Moe was closed on
@@ -4718,6 +4896,141 @@ final class Conductor: ObservableObject {
         conversationStore.search(query)
     }
 
+    /// The buttons under a turn (`ReplyActions`): only on the newest one,
+    /// and none while Moe is working on something.
+    func actions(for turn: Turn) -> [ReplyAction] {
+        guard !isWorking else { return [] }
+        return ReplyActions.of(text: turn.text, isAnswer: turn.role == .moe && !turn.isStreaming,
+                               failed: turn.failed, latest: turns.last?.id == turn.id)
+    }
+
+    /// Send and Yes: the person's own answer, as a turn, so anything that
+    /// goes out still meets the send gate's confirmation.
+    func answer(_ action: ReplyAction) {
+        guard let words = action.words else { return }
+        submit(words, origin: .typed, starter: .person)
+    }
+
+    /// Retry under an error: the question that failed, asked again. The
+    /// note goes; your message is sent again as the same message, under
+    /// the id the history already knows it by, so the thread does not
+    /// gain a copy of it.
+    func retry(failed id: UUID) {
+        guard !isWorking, let at = turns.firstIndex(where: { $0.id == id && $0.failed }),
+              let askedAt = turns[..<at].lastIndex(where: { $0.role == .you }) else { return }
+        let asked = turns[askedAt]
+        turns.remove(at: at)
+        turns.remove(at: askedAt)
+        submit(asked.text, origin: .typed, starter: .person, attachments: asked.attachments)
+        if let again = turns.lastIndex(where: { $0.role == .you }), turns[again].text == asked.text {
+            turns[again].storedID = asked.storedID ?? asked.id.uuidString
+        }
+    }
+
+    // MARK: Model per chat
+
+    /// The model this chat is set to, when it is not the default (the
+    /// owner's answer 9): kept per thread, on the provider it was chosen
+    /// from, and gone back to the default when the provider changes.
+    @Published private(set) var chatModel: String?
+
+    /// The brain for the conversation on screen: the person's choice in
+    /// Settings, with this chat's own model when it has one.
+    func chatSelection() -> BrainSelection {
+        var s = BrainSelection(config: config)
+        if let model = conversationStore.marks()[conversationID]?.model(on: s.provider.rawValue) {
+            s.model = model
+        }
+        return s
+    }
+
+    /// The models the person's own provider offers, for the chat's picker:
+    /// that provider's list (`BrainProviderKind.curatedModels`, the same one
+    /// Settings › Brain offers), with the default and this chat's model
+    /// always in it. A custom or local endpoint has no list, so it offers
+    /// only what is set.
+    var chatModelChoices: [String] {
+        var ids = config.brainProvider.curatedModels
+        for m in [chatModel, config.brainModel].compactMap({ $0 }) where !m.isEmpty && !ids.contains(m) {
+            ids.insert(m, at: 0)
+        }
+        return ids
+    }
+
+    /// The default model's id, as Settings › Brain has it.
+    var defaultChatModel: String { config.brainModel }
+
+    /// What the picker says about a model, from the provider's own captions.
+    func chatModelCaption(_ id: String) -> String { config.brainProvider.modelCaption(id) }
+
+    /// Set this chat's model; nil or the default goes back to the default.
+    func setChatModel(_ model: String?) {
+        let pick = model.flatMap { $0 == config.brainModel || $0.isEmpty ? nil : $0 }
+        do { try conversationStore.setModel(pick, provider: config.brainProvider.rawValue, for: conversationID) }
+        catch { Log.write("conversations: could not set the model: \(error.localizedDescription)") }
+        let before = bridge.brainFingerprint
+        applyChatBrain()
+        if bridge.brainFingerprint != before {
+            // The same conversation, on a session of the new model's — what
+            // a model change in Settings does, for this chat only.
+            settleForBrainChange()
+            bridge.resume(conversationLedger.resume(
+                thread: conversationID, brain: bridge.brainFingerprint,
+                knownTurns: storedTurns(), startedAt: conversationStartedAt))
+        }
+    }
+
+    /// Hand the brain this chat's selection. Before every resume onto a
+    /// thread, since the session id is derived from the thread and the model.
+    private func applyChatBrain() {
+        let s = chatSelection()
+        chatModel = s.model == config.brainModel ? nil : s.model
+        bridge.apply(brain: s)
+        chatForgets = conversationStore.marks()[conversationID]?.forget ?? false
+        bridge.remember(!chatForgets)
+        screen.enabled = config.screenContext
+            && (chatModel == nil ? brainSupportsVision : s.provider.capabilities(for: s.model).mayAttachImages)
+    }
+
+    // MARK: Don't remember this chat
+
+    /// The chat on screen is one the person asked not to be remembered:
+    /// every turn of it goes as `X-Hermes-No-Memory`, so nothing in it is
+    /// learned or written to memory, and it is never tagged.
+    @Published private(set) var chatForgets = false
+
+    /// Turn "Don't remember this chat" on or off for the chat on screen.
+    /// From the next turn: what was already learned stays, and the Memory
+    /// page is where to take it out.
+    func setChatForgets(_ forget: Bool) {
+        do { try conversationStore.setForget(forget, for: conversationID) }
+        catch { Log.write("conversations: could not set don't-remember: \(error.localizedDescription)") }
+        chatForgets = conversationStore.marks()[conversationID]?.forget ?? false
+        bridge.remember(!chatForgets)
+        NotificationCenter.default.post(name: .moeConversationsChanged, object: nil)
+    }
+
+    /// Pinned and archived, for the Chat list.
+    func conversationMarks() -> [String: ConversationStore.Marks] { conversationStore.marks() }
+
+    func pinConversation(id: String, _ pinned: Bool) {
+        do { try conversationStore.setPinned(pinned, for: id) }
+        catch { Log.write("conversations: could not pin: \(error.localizedDescription)") }
+    }
+
+    func archiveConversation(id: String, _ archived: Bool) {
+        do { try conversationStore.setArchived(archived, for: id) }
+        catch { Log.write("conversations: could not archive: \(error.localizedDescription)") }
+    }
+
+    /// A name you gave a thread. It takes the place of the AI's, which is
+    /// never asked for again once a thread has one.
+    func renameConversation(id: String, to title: String) {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        storeTitle(String(clean.prefix(80)), for: id)
+    }
+
     /// Reopen an earlier thread: its turns come back on screen, and anything
     /// said from here is appended to it.
     ///
@@ -4754,6 +5067,7 @@ final class Conductor: ObservableObject {
                  attachments: $0.attachments ?? [])
         }
         statusLine = ""
+        applyChatBrain()
         bridge.resume(conversationLedger.resume(
             thread: convo.id, brain: bridge.brainFingerprint,
             knownTurns: convo.turns, startedAt: convo.startedAt))
@@ -4775,6 +5089,7 @@ final class Conductor: ObservableObject {
             conversationStartedAt = Date()
             // And take the brain off the deleted thread's session, or the
             // next thing said continues the conversation you just deleted.
+            applyChatBrain()
             bridge.resume(conversationLedger.resume(
                 thread: conversationID, brain: bridge.brainFingerprint,
                 startedAt: conversationStartedAt))
@@ -4802,7 +5117,111 @@ final class Conductor: ObservableObject {
         // The cloud, if this Mac has one, gets whatever that wrote — after
         // it, off this thread, coalesced with whatever else is saved soon.
         cloud.ledgerSaved()
-        if delivered { nameIfNeeded(id: conversationID, turns: stored) }
+        if delivered {
+            nameIfNeeded(id: conversationID, turns: stored)
+            tagIfNeeded(id: conversationID, turns: stored)
+        }
+    }
+
+    /// Chats whose tagging call failed this launch: not asked again until the
+    /// next, so a provider that is down costs one call a chat, not one a turn.
+    private var tagTried: Set<String> = []
+
+    /// The one tagging call (`TitleNamer.tag`); a test stands in its own.
+    typealias TagCall = (_ thread: String, _ exchanges: [(you: String, answer: String)],
+                         _ existing: [String], _ done: @escaping ([String]?, Bool) -> Void) -> Void
+    lazy var tagCall: TagCall = { [unowned self] thread, exchanges, existing, done in
+        self.titleNamer.tag(thread: thread, exchanges: exchanges, existing: existing, done: done)
+    }
+
+    /// Tag a chat once it has `TagRules.minExchanges` answered exchanges:
+    /// one call at the cheapest model of the person's provider, never
+    /// repeated (`Marks.tagged`), never for a chat marked "Don't remember
+    /// this chat".
+    func tagIfNeeded(id: String, turns: [ConversationStore.StoredTurn]) {
+        let marks = conversationStore.marks()
+        let mark = marks[id] ?? .init()
+        let exchanges = TagRules.exchanges(of: turns)
+        guard !tagTried.contains(id),
+              TagRules.wants(forget: mark.forget, tagged: mark.tagged,
+                             answeredExchanges: exchanges.count) else { return }
+        tagTried.insert(id)
+        tagCall(id, exchanges, TagRules.vocabulary(marks)) { [weak self] tags, answered in
+            guard let self, answered || tags != nil else { return }
+            do {
+                // Marked "Don't remember this chat" while the call was out:
+                // `setTags` keeps it untagged.
+                try self.conversationStore.setTags(tags ?? [], for: id)
+                Log.write("tags: \(id.prefix(8)) \((tags ?? []).joined(separator: ", "))")
+                NotificationCenter.default.post(name: .moeConversationsChanged, object: nil)
+            } catch {
+                Log.write("tags: could not save: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: Edit and resend
+
+    /// Whether `id` is one of your messages that can be changed and sent
+    /// again: not while Moe is working, and not a message still waiting.
+    func canEdit(_ id: UUID) -> Bool {
+        !isWorking && turns.contains { $0.id == id && $0.role == .you }
+    }
+
+    /// Change one of your messages and send it again (the owner's answer,
+    /// 2026-11-13: a fresh session, no fork). The chat is cut at that message
+    /// and goes on as a new thread: the turns before it are carried over and
+    /// told to a fresh brain session the way reopening an old chat tells
+    /// them, the old thread is deleted through the ledger — a `thread.delete`
+    /// every device already honours, Away and the edge included, and its key
+    /// destroyed — and the changed message is sent. Its name, pin, model,
+    /// "Don't remember" and tags carry over. The only records written are
+    /// the two kinds every device already reads: turns and a thread delete.
+    func resend(editing id: UUID, to text: String, attachments: [ChatAttachment]? = nil) {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canEdit(id), let at = turns.firstIndex(where: { $0.id == id }),
+              !words.isEmpty || !(attachments ?? turns[at].attachments).isEmpty else { return }
+        let files = attachments ?? turns[at].attachments
+        let old = conversationID
+        saveConversation(flush: true)
+
+        grantWatch.cancelAll("a message was edited")
+        awaitingReply = false
+        replySignal.abandoned()
+        replyAbandoned = true
+        interruptionNote = nil
+        interruptedHeard = nil
+        stagedContext = nil
+        voice.stopAll()
+        partial = ""
+        streamingTurnID = nil
+        spokenUpTo = ""
+        mode = .idle
+
+        turns.removeSubrange(at...)
+        let kept = storedTurns()
+        let new = UUID().uuidString
+        do { try conversationStore.carrySideEntries(from: old, to: new) }
+        catch { Log.write("conversations: could not carry the chat's name and marks: \(error.localizedDescription)") }
+        conversationID = new
+        applyChatBrain()
+        // A thread the ledger has never seen: `resume` records the kept turns
+        // into it and primes a fresh session with them.
+        bridge.resume(conversationLedger.resume(
+            thread: new, brain: bridge.brainFingerprint,
+            knownTurns: kept, startedAt: conversationStartedAt))
+        try? conversationLedger.delete(id: old)
+        cloud.threadDeleted(old)
+        cloud.ledgerSaved()
+        Log.write("conversations: \(old.prefix(8)) edited at turn \(at); continues as \(new.prefix(8)) with \(kept.count) turn(s)")
+        NotificationCenter.default.post(name: .moeConversationsChanged, object: nil)
+        submit(words, origin: .typed, starter: .person, attachments: files)
+    }
+
+    /// Take a tag off a chat, from the list's menu.
+    func removeConversationTag(_ tag: String, id: String) {
+        try? conversationStore.removeTag(tag, for: id)
+        NotificationCenter.default.post(name: .moeConversationsChanged, object: nil)
     }
 
     /// The turns on screen, as the thread's file keeps them.
@@ -5478,6 +5897,12 @@ final class Conductor: ObservableObject {
     /// nothing: the real reason is that Hermes does not expose its
     /// messaging tools to the `claude-code` profile, so the model is asked
     /// to call a tool it does not have.
+    /// True from the moment the notes are handed to the brain for Telegram
+    /// until it answers, sent or not. A quit that was waiting for the notes
+    /// waits for this too (`QuitDuringMeeting.next`): it used to go the
+    /// moment the notes were on disk, with the send still in the air.
+    private(set) var meetingDeliveryInFlight = false
+
     private func deliverNotesToTelegram(summaryURL: URL?) {
         let gate = TelegramSelf.gate(enabled: config.meetingSendTelegram,
                                      target: MeetingSession.telegramSelfTarget(),
@@ -5492,6 +5917,7 @@ final class Conductor: ObservableObject {
             return
         }
         meetingDelivery = gate.message
+        meetingDeliveryInFlight = true
         let brain = liveBrain(.delivery)
         Task { [weak self] in
             let reply = (try? await brain.complete(system: TelegramSelf.system,
@@ -5500,6 +5926,7 @@ final class Conductor: ObservableObject {
                 guard let self else { return }
                 let (sent, message) = TelegramSelf.outcome(reply: reply)
                 self.meetingDelivery = message
+                self.meetingDeliveryInFlight = false
                 Log.write("meeting: telegram \(sent ? "sent" : "not sent") — \(message)")
                 // The delivery turn is the last thing a finished meeting
                 // does; settle the island once it has.
@@ -5722,6 +6149,7 @@ final class Conductor: ObservableObject {
     func setSpokenProgress(_ on: Bool) { config = Config.update { $0.spokenProgress = on } }
     func setReplyChime(_ on: Bool) { config = Config.update { $0.replyChime = on } }
     func setTypedAnswersOpenChat(_ on: Bool) { config = Config.update { $0.typedAnswersOpenChat = on } }
+    func setNotchHoverOpens(_ on: Bool) { config = Config.update { $0.notchHoverOpens = on } }
 
     /// The notch reads this every turn. The chat channels read it from
     /// Hermes's `platform_hints`, which configure-hermes.py writes from
@@ -5960,7 +6388,7 @@ final class Conductor: ObservableObject {
         if !capturePermissionWarned {
             capturePermissionWarned = true
             onMeetingCaptureProblem?(
-                "Moe needs Screen Recording to take pictures of the meeting. Allow it under "
+                "Memoe needs Screen Recording to take pictures of the meeting. Allow it under "
                 + "System Settings › Privacy & Security › Screen & System Audio Recording, then try again.", true)
         }
         return false
@@ -6821,6 +7249,51 @@ final class Conductor: ObservableObject {
     /// Kept equal to SIGNAL in moe-home/hermes-plugins/moe-screen/open_settings.py.
     static let openSettingsSignal = Notification.Name("com.moe.openSettings")
 
+    /// `moe_location` answers only while a turn the person started is in
+    /// flight with that step running in it — the same test, and the same
+    /// reason, as `openSettingsForBrain`.
+    var locationStepRunning: Bool {
+        awaitingReply && !replyAbandoned && turnStarter == .person
+            && runningToolNames.values.contains(where: LocationBridge.isLocationTool)
+    }
+
+    func watchForLocation() {
+        location.stepRunning = { [weak self] in self?.locationStepRunning ?? false }
+        location.watch()
+    }
+
+    /// Memoe's own settings for the brain (docs/SETTINGS-ASSISTANT.md): the
+    /// catalogue is published now and again after every change, and a change
+    /// or an open is answered only while a turn the person started is in
+    /// flight with that step running — the same test as `moe_location`.
+    var settingsStepRunning: Bool {
+        awaitingReply && !replyAbandoned && turnStarter == .person
+            && runningToolNames.values.contains(where: SettingsBridge.isSettingsTool)
+    }
+
+    func watchForSettings() {
+        // Live values (the ten-minute job, the learning consents) are read off
+        // the main thread first, so the published file never carries nil-guesses.
+        Task { @MainActor [weak self] in
+            await SettingsCatalogue.Live.refresh()
+            if let self { SettingsCatalogue.publish(self) }
+        }
+        settingsPublish = $config
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await SettingsCatalogue.Live.refresh()
+                    if let self { SettingsCatalogue.publish(self) }
+                }
+            }
+        settingsBridge.stepRunning = { [weak self] in self?.settingsStepRunning ?? false }
+        settingsBridge.open = { [weak self] page, title in
+            guard let self else { return }
+            SettingsWindow.show(conductor: self, at: page, spotlight: title)
+        }
+        settingsBridge.watch(self)
+    }
+
     // MARK: - Transcript
 
     private func appendToStreamingTurn(_ chunk: String) {
@@ -6838,11 +7311,14 @@ final class Conductor: ObservableObject {
         pendingTools = []
         let links = pendingLinks
         pendingLinks = []
-        let took = steps.isEmpty ? nil : workingSince.map { Date().timeIntervalSince($0) }
+        let thinking = pendingThinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingThinking = ""
+        let took = steps.isEmpty && thinking.isEmpty ? nil : workingSince.map { Date().timeIntervalSince($0) }
         workingStep = nil
         guard let id = streamingTurnID, let idx = turns.firstIndex(where: { $0.id == id }) else {
             if !full.isEmpty {
-                turns.append(Turn(role: .moe, text: full, tools: steps, took: took, links: links))
+                turns.append(Turn(role: .moe, text: full, tools: steps, took: took, links: links,
+                                  thinking: thinking))
             }
             return
         }
@@ -6850,6 +7326,7 @@ final class Conductor: ObservableObject {
         turns[idx].tools = steps
         turns[idx].took = took
         turns[idx].links = links
+        turns[idx].thinking = thinking
         turns[idx].isStreaming = false
         recordHistory(turns[idx])
         if turns[idx].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -6918,6 +7395,8 @@ extension Conductor {
         var level: Float = 0
         var alwaysListening = false
         var inConversation = false
+        /// The follow-up window, nobody speaking (`betweenTurns`).
+        var betweenTurns = false
         var pendingNudge: String?
         var pendingNudgeWhen: String?
         var pendingNudgeHandle: NudgeHandle?
@@ -6959,6 +7438,8 @@ extension Conductor {
         /// Moe has the screen, in this app (`drivingApp`), or the browser.
         var drivingApp: String?
         var browsing = false
+        /// A message typed while the turn in flight works (`queuedTyped`).
+        var queuedTyped: String?
     }
 
     /// Whether a reply is owed — for the tests that drive a turn through.
@@ -6966,6 +7447,9 @@ extension Conductor {
 
     /// Put the Conductor into a posed state. Assignment only.
     func pose(_ s: SnapshotState) {
+        // First: the last pose's held message must not be sent by this one
+        // ending its turn (`awaitingReply`'s didSet).
+        queuedTyped = nil
         mode = s.mode
         dictation = s.dictation
         dictationLatched = s.dictationLatched
@@ -6977,6 +7461,7 @@ extension Conductor {
         level = s.level
         alwaysListening = s.alwaysListening
         inConversation = s.inConversation
+        betweenTurns = s.betweenTurns
         pendingNudge = s.pendingNudge
         pendingNudgeWhen = s.pendingNudgeWhen
         pendingNudgeHandle = s.pendingNudgeHandle
@@ -7017,6 +7502,7 @@ extension Conductor {
         fixOffers = s.fixes.compactMap { FixOffer($0) }
         drivingApp = s.drivingApp
         browsing = s.browsing
+        queuedTyped = s.queuedTyped
     }
 }
 #endif
@@ -7093,14 +7579,16 @@ extension Conductor {
         input.expiredText = m.expiredText
         input.subject = m.subject
         let handle = NudgeHandle.forInbox(m)
-        receiveNotice(input, expiresAt: handle.expiresAt)
+        receiveNotice(input, expiresAt: handle.expiresAt,
+                      origin: InboxGate.Origin(writer: m.writer, timeCritical: m.timeCritical))
     }
 
     /// The one door into the inbox. A notice about something that already
     /// has an open card (the same `subject`) updates that card in place and
     /// raises it; the same words already waiting are not a second notice
     /// either: the first is brought back to the top instead.
-    func receiveNotice(_ input: NoticeInput, expiresAt: Date? = nil) {
+    func receiveNotice(_ input: NoticeInput, expiresAt: Date? = nil,
+                       origin: InboxGate.Origin = InboxGate.Origin()) {
         // A turn that said nothing ("noop", "[SILENT]", empty) is not a
         // notice. 2026-09-30: a resumed chat's silent warm-up became a
         // Heads-up card reading "noop".
@@ -7116,6 +7604,17 @@ extension Conductor {
         if input.source == ConfirmLifecycle.noteSource,
            notices.contains(where: { $0.body == input.text }) {
             Log.write("inbox: the same confirmation note again — logged, not raised: \(input.text.prefix(60))")
+            return
+        }
+        // Every card carries a do-it (docs/INBOX-QUIET.md decision 1). One
+        // that does not is kept under Done where it can be found, and
+        // nothing glows: `InboxGate` is the rule and its table of examples.
+        if case .quiet(let why) = InboxGate.decide(input, origin: origin) {
+            if let kept = InboxGate.kept(input, among: notices) {
+                notices.insert(kept, at: 0)
+                saveNotices()
+            }
+            Log.write("inbox: kept quiet (\(why.logged)) — under Done, not shown: \(input.text.prefix(60))")
             return
         }
         var n = NoticeMaker.make(input)
@@ -7143,6 +7642,38 @@ extension Conductor {
         saveNotices()
         Log.write("inbox: \(n.kind.rawValue) — \(n.title)")
         showPeek(n)
+    }
+
+    /// The app's own card at 80 % of a plan's allowance, with the one button
+    /// that buys the pack (docs/PLANS-AND-CAPS-2026-11-13.md §7 D7). Not
+    /// through `InboxGate`: that rule is about files other writers leave, and
+    /// this card's do-it is the button. One per pack — a second call for the
+    /// same pack while one is open raises that card instead of adding one.
+    func postAllowanceCard(pack: String, title: String, summary: String, button: String) {
+        let subject = "allowance:\(pack)"
+        if let i = notices.firstIndex(where: { $0.status == .open && $0.subject == subject }) {
+            notices[i].seen = false
+            notices[i].hidden = false
+            saveNotices()
+            return
+        }
+        var n = InboxItem(kind: .headsUp, title: title, summary: summary, body: summary, at: Date())
+        n.subject = subject
+        n.source = "Away"
+        n.buy = pack
+        n.buyTitle = button
+        notices.insert(n, at: 0)
+        saveNotices()
+        Log.write("inbox: allowance card — \(pack)")
+        showPeek(n)
+    }
+
+    /// The card's button: open the pack's checkout in the browser and finish
+    /// the card. Paying is Stripe's page; nothing is charged by the tap.
+    func buyNoticePack(_ id: String) {
+        guard let n = notice(id), !n.buy.isEmpty else { return }
+        cloud.buyPack(n.buy)
+        update(id) { $0.status = .done; $0.doneAt = Date(); $0.outcome = "Opened checkout"; $0.seen = true }
     }
 
     /// The line under the notch, for a few seconds, then the glow alone.
@@ -7177,7 +7708,7 @@ extension Conductor {
                 notices[i].doneAt = now
                 notices[i].outcome = "Expired"
                 changed = true
-                receiveNotice(NoticeInput(text: text, at: now))
+                receiveNotice(NoticeInput(text: text, at: now), origin: InboxGate.Origin(consequence: true))
             }
         }
         if changed { saveNotices() }
@@ -7259,7 +7790,11 @@ extension Conductor {
     // MARK: The island's inbox
 
     func toggleInbox() {
-        if showingInbox { showingInbox = false } else { openInbox() }
+        if showingInbox { closeInbox() } else { openInbox() }
+    }
+
+    func closeInbox() {
+        if showingInbox { showingInbox = false }
     }
 
     /// Looking at the list is seeing what is on it: the glow stops.

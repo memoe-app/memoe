@@ -81,6 +81,7 @@ struct DictationHistoryView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: open ? "chevron.down" : "chevron.right")
                     .font(.caption).foregroundStyle(.tertiary)
+                    .accessibilityLabel(open ? "Expanded" : "Collapsed")
             }
             .contentShape(Rectangle())
             .onTapGesture {

@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 import MoeVoice
 import MoeMeeting
@@ -73,10 +74,21 @@ final class AudioFrontEnd {
     /// The player lost what it had queued (device change): no completion
     /// will ever come for those buffers.
     var onPlaybackLost: (() -> Void)?
+    /// The microphone stopped working (`dead` true, with what to tell the
+    /// person) or came back (`dead` false). Said on the change only, never
+    /// once per failed try: a status, not an error per attempt.
+    var onMicrophoneHealth: ((_ dead: Bool, _ message: String?) -> Void)?
+    /// Every restart failed, or the graph runs and delivers nothing.
+    private(set) var microphoneDead = false
 
     // MARK: - Graph
 
-    private let engine = AVAudioEngine()
+    /// Replaced, never retried, when it can no longer be trusted
+    /// (`MicEngineRenewal`): an engine whose input node went stale stays
+    /// stale for as long as it lives.
+    private var engine = AVAudioEngine()
+    /// The last `start()` on this engine threw.
+    private var lastStartFailed = false
     private let player = AVAudioPlayerNode()
     private let cuePlayer = AVAudioPlayerNode()
     private var playbackFormat: AVAudioFormat
@@ -86,6 +98,16 @@ final class AudioFrontEnd {
     /// after the device changes under us.
     private var wantedUp = false
     private var teardown: Task<Void, Never>?
+    /// The run bringing the graph back after it failed to start; nil when
+    /// none is under way.
+    private var recovery: Task<Void, Never>?
+    /// This device would not start with voice processing, so the graph runs
+    /// plain on it — no echo cancellation — until the configuration changes.
+    /// Kept across restarts so nothing retries what was just refused.
+    private var voiceProcessingRefused = false
+    /// Notices a running graph that delivers nothing (`CaptureWatchdog`).
+    private var captureWatchdog = CaptureWatchdog()
+    private var captureWatch: Task<Void, Never>?
     private var configObserver: NSObjectProtocol?
     /// The device belongs to someone else (a meeting); buffers arrive
     /// through `feedExternalInput` instead.
@@ -110,16 +132,50 @@ final class AudioFrontEnd {
         engine.attach(player)
         engine.attach(cuePlayer)
         startDrain()
-        // The device changed under us: AirPods on, headphones out, a
-        // display with speakers. The engine stops itself and the tap goes
-        // dead — Moe would look alive and hear nothing, and the next
-        // `play()` would throw. Bring it back if it was wanted.
+        observeConfiguration()
+        listenForDefaultDeviceChanges()
+    }
+
+    /// The device changed under us: AirPods on, headphones out, a display
+    /// with speakers. The engine stops itself and the tap goes dead — Moe
+    /// would look alive and hear nothing, and the next `play()` would throw.
+    /// Bring it back if it was wanted. Per engine: a new one is observed
+    /// afresh.
+    private func observeConfiguration() {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.deviceChanged() }
         }
     }
+
+    /// Throw the engine away and build another, with the same two players.
+    /// Only while the graph is down. A new engine starts with voice
+    /// processing off and reads the device as it is now.
+    private func renewEngine(_ why: MicEngineRenewal.Reason) {
+        Log.write("audio: a new audio engine — \(why)")
+        let old = engine
+        old.stop()
+        old.detach(player)
+        old.detach(cuePlayer)
+        engine = AVAudioEngine()
+        engine.attach(player)
+        engine.attach(cuePlayer)
+        lastStartFailed = false
+        observeConfiguration()
+    }
+
+    /// Record the microphone's health and say so on a change.
+    func noteMicrophone(dead: Bool, message: String? = nil) {
+        guard dead != microphoneDead else { return }
+        microphoneDead = dead
+        Log.write(dead ? "audio: microphone marked not working" : "audio: microphone working again")
+        onMicrophoneHealth?(dead, message)
+    }
+
+    static let deadMessage = "Moe can't hear you — the microphone won't start. Moe will try it again the next time you talk to it."
+    static let silentMessage = "Moe can't hear you — the microphone is on but sending nothing. Reconnecting it, or quitting and reopening Memoe, should bring it back."
 
     private func deviceChanged() {
         Log.write("audio: device configuration changed")
@@ -134,20 +190,161 @@ final class AudioFrontEnd {
             engine.stop()
             isRunning = false
         }
+        // Is this a different device, or the same one reconfigured — which
+        // is what our own restarts can look like from here (switching voice
+        // processing re-shapes the unit)? Only a different device earns a
+        // clean slate. Otherwise a restart that announced itself would
+        // forget what was just refused and what the watchdog had already
+        // tried, and the bounded things here would stop being bounded.
+        let devices = Self.defaultDevices()
+        let different = devices != knownDevices
+        knownDevices = devices
+        if different {
+            // It may take the voice processing the last one refused…
+            voiceProcessingRefused = false
+            // …and is a new thing for the watchdog to judge.
+            captureWatchdog = CaptureWatchdog()
+        }
         guard wanted, !externalInput else { return }
-        // Let the device settle before the graph is rebuilt on it.
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard let self, self.wantedUp, !self.isRunning else { return }
-            do {
-                try self.start()
+        // A run already bringing the graph back on these same devices is
+        // left to finish its ladder rather than sent back to the first rung.
+        if recovery != nil, !different, !isRunning { return }
+        recover(idleFuse: idleFuse)
+    }
+
+    /// The default input and output devices, as Core Audio names them now.
+    private var knownDevices: [AudioDeviceID] = []
+    private static func defaultDevices() -> [AudioDeviceID] {
+        [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice].map { selector in
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var device = AudioDeviceID(0)
+            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
+            return device
+        }
+    }
+
+    static func shape(_ format: AVAudioFormat) -> AudioShape {
+        AudioShape(sampleRate: format.sampleRate, channels: Int(format.channelCount))
+    }
+
+    /// The default input device's nominal rate and input channel count, as
+    /// Core Audio reports them now; nil when either cannot be read.
+    static func defaultInputShape() -> AudioShape? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var device = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != 0 else { return nil }
+
+        var rate = Float64(0)
+        size = UInt32(MemoryLayout<Float64>.size)
+        address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                             mScope: kAudioObjectPropertyScopeGlobal,
+                                             mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate) == noErr, rate > 0 else { return nil }
+
+        address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                             mScope: kAudioObjectPropertyScopeInput,
+                                             mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0 else { return nil }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, raw) == noErr else { return nil }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        let channels = list.reduce(0) { $0 + Int($1.mNumberChannels) }
+        guard channels > 0 else { return nil }
+        return AudioShape(sampleRate: rate, channels: channels)
+    }
+
+    /// Bring the graph back: a few tries while the device settles, then one
+    /// without voice processing, then — only then — one error
+    /// (`CaptureRecovery`). One run at a time; a newer one replaces it.
+    /// `wantedUp` stays set after a failure, so the next configuration
+    /// change runs this again.
+    private func recover(idleFuse: Bool) {
+        recovery?.cancel()
+        recovery = Task { [weak self] in
+            let outcome = await CaptureRecovery.run(
+                sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
+                stillWanted: { [weak self] in
+                    guard let self, !Task.isCancelled else { return false }
+                    return self.wantedUp && !self.isRunning && !self.externalInput
+                },
+                start: { [weak self] plain in
+                    guard let self else { throw CancellationError() }
+                    // Only when voice processing is what the failed tries
+                    // asked for: with a call on the microphone they were
+                    // plain already, and it must come back after the call.
+                    if plain, self.echoCancellationActive { self.voiceProcessingRefused = true }
+                    try self.start()
+                },
+                log: { Log.write("audio: \($0)") })
+            guard let self, !Task.isCancelled else { return }
+            self.recovery = nil
+            switch outcome {
+            case .restarted(let plain, let attempts):
+                Log.write("audio: microphone back on attempt \(attempts)"
+                          + (plain && self.voiceProcessingRefused
+                             ? " — WITHOUT voice processing (this device refused it); no echo cancellation until the audio device changes" : ""))
                 // `start()` cancels a pending teardown; a graph that was
                 // on its way down must still go down.
                 if idleFuse { self.scheduleTeardown(after: 60) }
                 self.onRestarted?()
-            } catch {
-                Log.write("audio: restart after device change failed: \(error)")
-                self.onError?("Microphone unavailable after the audio device changed: \(error.localizedDescription)")
+            case .abandoned:
+                break
+            case .failed(let why):
+                self.voiceProcessingRefused = false
+                Log.write("audio: MICROPHONE DEAD — every restart failed (\(why)); waiting for the next audio device change")
+                // One quiet status, not a bubble per failed ladder: each
+                // hold press runs the ladder again, and on 2026-11-13 each
+                // one put the same raw error into the conversation.
+                self.noteMicrophone(dead: true, message: Self.deadMessage)
+            }
+        }
+    }
+
+    /// `start()`, and if it throws, the same recovery a device change gets
+    /// instead of one error and a dead microphone. True when the graph is
+    /// up on return; false means it is being brought up (or has failed, and
+    /// `onError` has said so).
+    @discardableResult
+    func startOrRecover() -> Bool {
+        if recovery != nil, !isRunning {
+            // Already being brought up; a second ladder would only reset it.
+            teardown?.cancel(); teardown = nil
+            wantedUp = true
+            return false
+        }
+        do {
+            try start()
+            return true
+        } catch {
+            Log.write("audio: graph failed to start (\(error)) — retrying")
+            recover(idleFuse: false)
+            return false
+        }
+    }
+
+    /// The default input or output device changed while the graph was down
+    /// and wanted — which is the state a failed recovery leaves. A stopped
+    /// engine is not promised a configuration-change notification, so this
+    /// is what makes "try again on the next change" true.
+    private func listenForDefaultDeviceChanges() {
+        for selector in [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice] {
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
+                Task { @MainActor in
+                    guard let self, self.wantedUp, !self.isRunning, !self.externalInput,
+                          self.recovery == nil else { return }
+                    self.deviceChanged()
+                }
             }
         }
     }
@@ -177,9 +374,17 @@ final class AudioFrontEnd {
         teardown?.cancel(); teardown = nil
         wantedUp = true
         guard !isRunning, !externalInput else { return }
+        do {
+            try startGraph()
+            lastStartFailed = false
+        } catch {
+            // The next try gets a new engine (`MicEngineRenewal`).
+            lastStartFailed = true
+            throw error
+        }
+    }
 
-        let input = engine.inputNode
-        let output = engine.outputNode
+    private func startGraph() throws {
 
         // Must be set while the engine is stopped: it swaps the unit for a
         // duplex VoiceProcessingIO and re-shapes the buses. Never while a
@@ -191,7 +396,18 @@ final class AudioFrontEnd {
         }
         echoCancellationHeldBy = callHolding
         let wasActive = echoCancellationActive
-        echoCancellationActive = echoCancellation && callHolding == nil
+        echoCancellationActive = echoCancellation && callHolding == nil && !voiceProcessingRefused
+        // Never retry on an engine that just failed, and never switch voice
+        // processing off in place: on macOS 27 that leaves the input node
+        // reading 2 ch / 44.1 kHz for good (`MicEngineRenewal`).
+        if let why = MicEngineRenewal.before(lastStartFailed: lastStartFailed,
+                                             voiceProcessingOnEngine: engine.inputNode.isVoiceProcessingEnabled,
+                                             voiceProcessingWanted: echoCancellationActive) {
+            renewEngine(why)
+        }
+        var renewed = false
+        var input = engine.inputNode
+        var output = engine.outputNode
         if echoCancellationActive {
             if !input.isVoiceProcessingEnabled { try input.setVoiceProcessingEnabled(true) }
             if !output.isVoiceProcessingEnabled { try output.setVoiceProcessingEnabled(true) }
@@ -201,14 +417,29 @@ final class AudioFrontEnd {
             input.voiceProcessingOtherAudioDuckingConfiguration =
                 AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false,
                                                                       duckingLevel: .min)
-        } else {
-            if input.isVoiceProcessingEnabled { try? input.setVoiceProcessingEnabled(false) }
-            if output.isVoiceProcessingEnabled { try? output.setVoiceProcessingEnabled(false) }
+        } else if output.isVoiceProcessingEnabled {
+            // The input side was checked above; the output side alone is
+            // not known to go stale, and a new engine is the same answer.
+            renewEngine(.voiceProcessingOff)
+            renewed = true
+            input = engine.inputNode
+            output = engine.outputNode
         }
 
         // Read the shape back — never assume it. Observed 3 channels on one
         // run and 7 on another, on the same machine.
-        let micFormat = input.outputFormat(forBus: 0)
+        var micFormat = input.outputFormat(forBus: 0)
+        // Plain, the node must read what the microphone is. A node that
+        // does not was left stale by something before us: a new engine,
+        // once, and its reading is taken whatever it says.
+        if !renewed, let why = MicEngineRenewal.after(node: Self.shape(micFormat),
+                                                      device: Self.defaultInputShape(),
+                                                      voiceProcessing: echoCancellationActive) {
+            renewEngine(why)
+            input = engine.inputNode
+            output = engine.outputNode
+            micFormat = input.outputFormat(forBus: 0)
+        }
         guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
             throw NSError(domain: "Moe.Audio", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "no microphone input (is one connected?)"])
@@ -252,12 +483,70 @@ final class AudioFrontEnd {
             throw error
         }
         isRunning = true
+        knownDevices = Self.defaultDevices()
         applyBypass()
+        noteMicrophone(dead: false)
         let vp = echoCancellationActive ? "on\(voiceProcessingBypassed ? " (bypassed while idle)" : ""), ducking off"
-            : (echoCancellationHeldBy.map { "off (\($0) has the microphone)" } ?? "off")
+            : (echoCancellationHeldBy.map { "off (\($0) has the microphone)" }
+               ?? (voiceProcessingRefused ? "off (this device refused it)" : "off"))
         Log.write("audio: graph up (\(Int(micFormat.sampleRate)) Hz × \(micFormat.channelCount) in, voice processing \(vp))")
         if wasActive != echoCancellationActive { onEchoCancellationChanged?(echoCancellationActive) }
         watchCallApps()
+        watchCapture()
+    }
+
+    // MARK: - Capture watchdog
+
+    /// While the graph is up, look once a second at whether the tap has
+    /// delivered anything (`CaptureWatchdog`). The render thread's whole
+    /// part in this is one atomic add per buffer in `SampleRing.write`.
+    private func watchCapture() {
+        captureWatch?.cancel()
+        captureWatchdog.graphStarted(delivered: ring.deliveries, now: callClock())
+        captureWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self, self.isRunning, !self.externalInput else { return }
+                switch self.captureWatchdog.observe(delivered: self.ring.deliveries,
+                                                    speaking: self.playbackBusy(),
+                                                    now: self.callClock()) {
+                case .healthy:
+                    // Buffers are arriving: whatever was said is over.
+                    self.noteMicrophone(dead: false)
+                    continue
+                case .waiting:
+                    continue
+                case .restart(let attempt):
+                    Log.write("audio: a running graph has stopped delivering microphone buffers — restarting it (\(attempt) of \(self.captureWatchdog.maxRestarts))")
+                    self.restartForSilence()
+                    return
+                case .giveUp:
+                    Log.write("audio: MICROPHONE SILENT — \(self.captureWatchdog.maxRestarts) restarts brought no buffers; leaving the graph alone until they arrive or the audio device changes")
+                    self.noteMicrophone(dead: true, message: Self.silentMessage)
+                }
+            }
+        }
+    }
+
+    /// Down and up again because the tap went quiet. Playback in flight is
+    /// lost, as on a device change — which is why the watchdog never asks
+    /// for this while Moe is speaking.
+    private func restartForSilence() {
+        let idleFuse = teardown != nil
+        player.stop()
+        onPlaybackLost?()
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        isRunning = false
+        do {
+            try start()
+        } catch {
+            Log.write("audio: restart after silence failed (\(error)) — retrying")
+            recover(idleFuse: idleFuse)
+            return
+        }
+        if idleFuse { scheduleTeardown(after: 60) }
+        onRestarted?()
     }
 
     /// While the graph is up, ask Core Audio every `callCheckSeconds` who
@@ -283,8 +572,12 @@ final class AudioFrontEnd {
                     Log.write("audio: \(app) is on the microphone, voice processing off so it hears you")
                     self.callHolding = app
                 case .takeBack:
-                    Log.write("audio: call app gone, voice processing back on")
                     self.callHolding = nil
+                    // Nothing to take back on a device that refused it: a
+                    // restart here would only repeat the refusal, every
+                    // ten seconds, for as long as the device stayed.
+                    if self.voiceProcessingRefused { continue }
+                    Log.write("audio: call app gone, voice processing back on")
                 }
                 self.restartForVoiceProcessing()
                 return
@@ -385,12 +678,14 @@ final class AudioFrontEnd {
             // Voice processing refused on this device: plain input is
             // better than a dead microphone. Once more, without it.
             Log.write("audio: restart for voice processing failed (\(error)); retrying plain")
-            let wanted = echoCancellation
-            echoCancellation = false
-            defer { echoCancellation = wanted }
+            // Remembered, not retried: this used to put the wish straight
+            // back, and the call watchdog then asked for voice processing
+            // again every ten seconds on a device that kept refusing it.
+            if echoCancellationActive { voiceProcessingRefused = true }
             do { try start() } catch {
                 Log.write("audio: plain restart failed too: \(error)")
-                onError?("Microphone unavailable: \(error.localizedDescription)")
+                voiceProcessingRefused = false
+                recover(idleFuse: idleFuse)
                 return
             }
         }
@@ -401,7 +696,10 @@ final class AudioFrontEnd {
     /// Take the graph down now: tap removed, engine stopped, microphone off.
     func stop() {
         teardown?.cancel(); teardown = nil
+        recovery?.cancel(); recovery = nil
         callWatch?.cancel(); callWatch = nil
+        captureWatch?.cancel(); captureWatch = nil
+        captureWatchdog = CaptureWatchdog()
         wantedUp = false
         stopPlayback()
         if isRunning { cuePlayer.stop() }
@@ -601,6 +899,12 @@ final class SampleRing: @unchecked Sendable {
     private let consumed = Atomic<Int>(0)
     private let rateHz = Atomic<Int>(48_000)
     private let overflowed = Atomic<Bool>(false)
+    private let delivered = Atomic<Int>(0)
+
+    /// How many buffers the producer has handed over, ever. One wait-free
+    /// add per buffer on the render thread; read from the main actor by the
+    /// capture watchdog, which only asks whether it moved.
+    var deliveries: Int { delivered.load(ordering: .relaxed) }
 
     init(capacity: Int) {
         self.capacity = capacity
@@ -631,6 +935,9 @@ final class SampleRing: @unchecked Sendable {
     /// behind, the incoming samples are dropped rather than the old ones
     /// overwritten under the reader.
     func write(_ src: UnsafePointer<Float>, count: Int) {
+        // Before the overflow check: a stalled consumer is still a live
+        // microphone, and this counts the microphone.
+        delivered.wrappingAdd(1, ordering: .relaxed)
         let w = written.load(ordering: .relaxed)
         let r = consumed.load(ordering: .acquiring)
         guard w - r + count <= capacity else {

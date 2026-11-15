@@ -82,9 +82,9 @@ enum EventKitBridge {
                 fail("needs-setup: \(name) access request failed: \(error.localizedDescription)", code: deniedExit)
             }
             if granted { return }
-            fail("needs-setup: allow Moe full access to \(name) (System Settings › Privacy & Security › \(pane))", code: deniedExit)
+            fail("needs-setup: allow Memoe full access to \(name) (System Settings › Privacy & Security › \(pane))", code: deniedExit)
         case .denied, .restricted, .writeOnly:
-            fail("needs-setup: allow Moe full access to \(name) (System Settings › Privacy & Security › \(pane))", code: deniedExit)
+            fail("needs-setup: allow Memoe full access to \(name) (System Settings › Privacy & Security › \(pane))", code: deniedExit)
         @unknown default:
             fail("needs-setup: \(name) access is in an unknown state", code: deniedExit)
         }
@@ -110,7 +110,7 @@ enum EventKitBridge {
                 print("ok: \(name) full access granted to Moe")
             } else {
                 allGranted = false
-                print("needs-setup: allow Moe full access to \(name) (System Settings › Privacy & Security › \(pane))")
+                print("needs-setup: allow Memoe full access to \(name) (System Settings › Privacy & Security › \(pane))")
             }
         }
         exit(allGranted ? 0 : deniedExit)

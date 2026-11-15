@@ -94,6 +94,12 @@ public struct InboxItem: Codable, Equatable, Identifiable, Sendable {
     /// thing updates that card in place instead of adding one
     /// (docs/INBOX-QUIET.md decision 8). Empty: matched by its words only.
     public var subject: String = ""
+    /// A pack its one button buys — `voice` or `hours` — on the app's own
+    /// card at 80 % of a plan's allowance (docs/PLANS-AND-CAPS-2026-11-13.md
+    /// §7 D7). Empty on every other card.
+    public var buy: String = ""
+    /// That button's words ("Add 100 hours · $5").
+    public var buyTitle: String = ""
 
     public init(id: String = UUID().uuidString, kind: Kind, title: String, summary: String,
                 body: String, at: Date) {
@@ -108,7 +114,7 @@ public struct InboxItem: Codable, Equatable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, kind, title, summary, body, at, status, hidden, snoozedUntil, seen, doneAt, outcome,
              options, source, job, jobID, loops, said, instruction, offer, awayCarry, expiresAt, expiredText,
-             openThread, subject
+             openThread, subject, buy, buyTitle
     }
 
     /// Every field but the first six is optional on disk, so a file written
@@ -140,6 +146,8 @@ public struct InboxItem: Codable, Equatable, Identifiable, Sendable {
         expiredText = try c.decodeIfPresent(String.self, forKey: .expiredText) ?? ""
         openThread = try c.decodeIfPresent(String.self, forKey: .openThread) ?? ""
         subject = try c.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        buy = try c.decodeIfPresent(String.self, forKey: .buy) ?? ""
+        buyTitle = try c.decodeIfPresent(String.self, forKey: .buyTitle) ?? ""
     }
 
     /// Waiting, and not snoozed past `now`.

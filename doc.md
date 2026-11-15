@@ -36,17 +36,40 @@ building Memoe, and they are kept in step with the app.
   line slides out beside the notch, and what it has waits in its
   [inbox](#your-inbox). A Mac without a notch gets a small black tab in the
   middle of the menu bar instead.
+  On a MacBook whose camera sits in a small floating capsule rather than a
+  notch, Moe is that capsule: at rest it looks exactly like the camera and
+  nothing more — even while something waits in your inbox (hover to see it),
+  and while a conversation is open but nobody is speaking. The capsule
+  widens sideways while you are speaking to Moe, while it thinks, works or
+  speaks back, and when something has just arrived, and it opens into a rounded card that hangs from the capsule
+  instead of from the top of the screen. You do not have to hit the capsule
+  itself: pointing anywhere near it at the top edge of the screen opens Moe.
+  While a microphone is in use, macOS shows its own orange dot beside the
+  camera, and sometimes a wider outlined pill with a microphone in it. That
+  is the system's, not Moe's, and nothing can be drawn over it, so Moe puts
+  what it has to say either side of it: its bars or ring on the left, its
+  word on the right. Opened, the card says what Moe is doing once, beside
+  the camera.
+- **VoiceOver and Reduce Motion.** The island and every button on its panel
+  are named for VoiceOver, and the folded island reads out what it is
+  showing (*Listening*, *Muted*, *Thinking*, a notice's line). With **Reduce
+  Motion** on in System Settings, the island changes shape at once instead
+  of springing, and its working light holds still.
 - **The main window** (⌘0, or *Show Window* in the Memoe menu) has six rows:
   **Chat**, **Inbox** and **Meetings**; **Memory** under *Library*; **Connections** and
   **Message Moe** under *Reach*. **Settings** (⌘,) is at the bottom, and the
-  footer shows two dots: *Connected* and *Voice ready*.
+  footer shows two dots: *Connected* and *Voice ready*. If the microphone
+  stops working, the second dot turns to *Microphone not working* and the
+  island's status line says so once — nothing is added to your
+  conversation — and Moe tries the microphone again the next time you talk
+  to it.
 - **Settings** has thirteen panes: Brain, Voice, Meeting Capture,
   Permissions, Reminders, Running in the background, Activity, Chats, Skills,
   Usage, Upgrade (called Away once you have a plan), Privacy, and About &
   Licences. Each has a page here.
 - **The menu-bar icon** is a small waveform; it turns into a red dot while a
-  meeting is recording. Its menu has *Talk to Moe*, *Open Moe*, *Start
-  meeting*, *Always Listening ("Hey Moe")*, *Hide Island* and *Quit Moe*.
+  meeting is recording. Its menu has *Talk to Moe*, *Open Memoe*, *Start
+  meeting*, *Always Listening ("Hey Moe")*, *Hide Island* and *Quit Memoe*.
 
 ### Memoe is in beta
 
@@ -100,10 +123,22 @@ checks it and asks once: *"Memoe" is an app downloaded from the Internet. Are
 you sure you want to open it?* Click **Open**. That is all of it: there is no
 trip to System Settings and no Privacy & Security step.
 
-After that, Moe asks for what it needs as it first needs it: the microphone
-the first time you talk to it, permission to control your Mac the first time
-you ask it to do something there. Those are macOS asking on your behalf, not
-warnings about Memoe.
+If you open Memoe straight from the disk image instead of dragging it
+first, it says so and offers **Move to Applications**: it copies itself
+there, opens from there, and changes nothing else. It never moves without
+that click. If there is already a Memoe in Applications it asks first:
+**Replace it** (the old one goes to the Trash; your notes, memory and
+settings are kept elsewhere and are not touched), **Open the one in
+Applications**, or **Quit**. Memoe has to live in Applications to keep
+itself up to date and run its background jobs, so the other choice is
+**Quit**. If it cannot copy itself, it says nothing was changed and asks
+you to drag it there yourself.
+
+After that, the welcome asks for what Moe needs, one thing at a time: the
+microphone, so it can hear you, then permission to notice its talk key and
+to see your screen. You can skip any of them, and whatever you skip is asked
+for again the first time it is needed. Those are macOS asking on your
+behalf, not warnings about Memoe.
 
 Moe keeps everything it makes in `~/Library/Application Support/Moe`:
 memories, meeting notes, transcripts, settings and connections. That is
@@ -127,6 +162,11 @@ The first time Moe opens, a short welcome walks you through it: seven
 screens, one thing each, all of them skippable. **Back** and **Skip** are on
 every screen, nothing in it is permanent, and nothing breaks if you say no.
 
+Closing the welcome part-way does not end it: the next time Moe opens, the
+welcome comes back on the screen you left. It is finished when you reach the
+last screen and press **Take me to Connections** or **Not now**. To see it
+again at any time, choose **Show Welcome Again** in the Moe menu.
+
 1. **Hi, I'm Moe.** The four things it does: answer out loud, take meeting
    notes, remember you, reach your things. One line says Memoe is in beta.
 2. **Can I hear you?** The one permission asked up front. **Turn on the
@@ -139,20 +179,41 @@ every screen, nothing in it is permanent, and nothing breaks if you say no.
    with Claude** or **Sign in with ChatGPT**; Moe works as well with either.
    Below them: **Paste a key you already have** (Anthropic, OpenAI,
    OpenRouter, Google Gemini, DeepSeek, xAI and others), or **Run a model on
-   this Mac**. Signing in happens in your browser, never in a Terminal: Moe
+   this Mac**. And for someone who pays for no AI at all, **No AI plan?**
+   with **Start free**: a Google Gemini key is free up to Google's daily
+   allowance (pennies a question after that), and a model on this Mac is
+   free for good. Memoe has no free AI of its own. Those three open
+   Settings › Brain, where the key or the model is chosen, and the welcome
+   stays open and waits: it says what to press there, notices when the
+   choice is made, asks it one question to check it answers, and carries on
+   at *Say hello* with a tick, *I'm thinking with … now*. If it does not
+   answer, the welcome says why and checks again when you fix it. Signing in happens in your browser, never in a Terminal: Moe
    opens the page, and for ChatGPT it shows you the code the page asks for,
-   already copied. On a fresh copy of Memoe this screen says *getting ready*
-   for the few seconds it takes to lay down the part that thinks.
-4. **Say hello.** Hold right ⌥, say "what can you do?", and let go.
-   Double-tap the key to stop Moe, or press ⌃⌥Space to start it and again to
-   stop. This screen also asks for the two macOS permissions a first task
-   needs, one button and one line each, both skippable: **Accessibility**, so
-   Moe can hear the talk key in any app and click for you when you ask, and
-   **Screen Recording**, so Moe can see your screen when you ask about it.
-   Screen Recording takes effect the next time Moe opens. If System Settings
-   shows Moe switched on for Accessibility and Moe still says it is off,
-   macOS is remembering an older copy: **Reset and ask again** clears that.
-   The ⌃⌥Space shortcut works without any of it.
+   already copied. Whichever plan you sign in with, the screen shows a tick,
+   *Signed in with…*, and moves on to the next step. If Moe cannot download
+   what a sign-in needs, it says so and offers **Try again**. On a fresh
+   copy of Memoe this screen says *getting ready* for the few seconds it
+   takes to lay down the part that thinks.
+4. **Say hello.** Press **Talk to me**, or ⌃⌥Space, and say "what can you
+   do?". Both work straight away. Holding right ⌥ needs **Accessibility**
+   first, so until that is on its card is at the top of this screen: press
+   **Allow it**, switch Memoe on in System Settings, and the screen waits
+   and notices by itself — there is nothing to quit and reopen. Once it is
+   on, the screen leads with the key: hold right ⌥, say it, let go;
+   double-tap the key to stop Moe. The screen also asks for **Screen
+   Recording**, so Moe can see your screen when you ask about it; that one
+   takes effect the next time Moe opens. Both are one button and one line,
+   and both can be skipped. Neither of them is what lets Moe click and
+   type for you: a helper app called **CuaDriver** does that, and macOS
+   asks about it under that name, Accessibility and Screen Recording once
+   each, the first time you ask Moe to do something on your Mac. The screen
+   says so, so the name is not a surprise. If System Settings shows Moe switched on for
+   Accessibility and Moe still says it is off, macOS is remembering an older
+   copy: **Reset and ask again** clears that. While Moe is still getting
+   ready to listen, the screen says so (*Getting my ears on…*), the same
+   line the island shows. The welcome moves on once Moe has finished
+   answering you, not while it is still talking. If you ask before an AI is
+   connected, Moe says so out loud instead of staying silent.
 5. **I'll take the notes.** What a meeting records and where it stays, and
    one switch, **Start and stop a meeting with ⌃⌥M**, off: a key that
    records other people is one you switch on yourself.
@@ -195,8 +256,20 @@ Moe's thinking part ships inside the app and is laid down on first launch.
 Moe starts it when Moe opens and restarts it if it stops. If it keeps
 stopping, Moe says so once, *The part of Moe that thinks kept stopping*, and
 then keeps trying quietly in the background about once a minute until it is
-back; you don't have to quit Moe or open it again. New Conversation tries
-right away. Each version of Memoe also keeps that part current on its own: a
+back; you don't have to quit Moe or open it again. When it is back, Moe is
+back with it: the window says *Connected* again and your next question is
+answered. You don't have to wait for the minute either. Asking Moe something
+while it is down makes it try again right then, as New Conversation does.
+
+It can also be running and answering nothing. When an answer does not come
+at all, *Moe is taking too long to answer*, Moe asks its thinking part
+whether it is still there. If it answers, it was only that one question
+that was slow, and nothing is touched: a long piece of research is allowed
+to take its time. If it does not answer twice in a row, Moe replaces it,
+which takes a few seconds, and your next question is answered. Until this
+version that check did not exist, and every question after the first one
+ended the same way until you quit Memoe.
+Each version of Memoe also keeps that part current on its own: a
 small update in the background, one brief *restarting*, and that is all you
 see.
 
@@ -264,11 +337,37 @@ is ever taken from a half-heard sentence.
 
 ### Hands-free, with nothing held down
 
-Two of the four ways in need nothing held down. **⌃⌥Space** starts and
-stops a turn with a tap, and needs no permission at all. **Say "Hey Moe"**
-goes further: turn it on in **Settings › Voice › Or just say "Hey Moe"**,
-or from the menu-bar icon, and Moe starts listening from the name alone,
-with nothing pressed at all.
+Only one of the four ways needs nothing pressed at all: **Say "Hey Moe"**.
+Turn it on in **Settings › Voice › Or just say "Hey Moe"**, or from the
+menu-bar icon, and Moe starts listening from the name alone, with nothing
+pressed and nothing held.
+
+**⌃⌥Space** needs nothing *held* down — it starts and stops a turn with a
+tap, and needs no permission at all — but a tap is still a key press, not
+an answer for someone who cannot press one.
+
+### If the shortcut does nothing
+
+- **The hold-key method stays silent:** it needs Accessibility first. Until
+  you turn that on, Moe says so wherever you'd look for it — hovering the
+  island, at the top of the open panel, above the chat box — each with a
+  **Fix** button, and the warning clears the moment it's on.
+- **Another app already answers to the key you picked:** right ⌥, right ⌘
+  and right ⌃ are free on most Macs, but if something else gets there
+  first, pick a different one in **Settings › Voice › Hold a key to
+  talk** — the new key works straight away, no restart. fn is the one
+  exception: set **System Settings › Keyboard › Press 🌐 key** to **Do
+  Nothing** first, or macOS answers to it instead of Moe.
+- **⌃⌥Space does nothing, or clashes with another app:** under **More** in
+  Settings › Voice, *Shortcut to ask* offers **⌥Space**, **⌘⌥Space** or
+  **⌃Space** instead. A changed shortcut takes effect once Moe restarts,
+  not the moment you pick it.
+- **The key works, then suddenly doesn't — same key, same app:** if the
+  moment you held it, it was also partway through a shortcut another app
+  was mid-press on (fn + Delete, or right ⌘ + Tab), the press is dropped on
+  purpose: nothing is recorded, no picture taken, and any reply Moe had
+  paused carries on where it left off. That's Moe staying out of your own
+  shortcut's way, not a miss.
 
 ### Staying in the conversation
 
@@ -424,6 +523,12 @@ opens by itself when you start talking, and again when Moe starts to answer,
 so you can read along without hovering, even with *Open by itself* set to
 Never. It fills in white while it is on, and it lasts for that conversation:
 when the conversation ends it switches itself off.
+
+**A long answer.** Hovering shows the panel at its usual size; click the
+notch and the panel opens taller, with the extra room given to the
+conversation. A long answer stays at its first line while Moe is still
+writing it, so you can read down from the top instead of being pulled to
+the newest word, and the scroll bar shows when there is more.
 
 ### Muting yourself
 
@@ -601,14 +706,21 @@ the rest of the session. A long message of yours shows its start and
 **More**; Moe's answers are always shown whole. While
 Moe works, its step is the newest row: what it is doing right now, in plain words
 ("Searching your files", "Working through the page"), and then, in the same
-place, the answer. Nothing swaps out underneath you. **Stop** is the square
-icon behind the **⋯** while Moe works, and it ends the job. The box to
-type in is always there. Anything you type while Moe is still on the last
-thing is held, shown in the chat as *Sends when Moe finishes*, and sent the
-moment it does; stopping Moe drops it. The steps Moe took are in the Moe window.
+place, the answer. Nothing swaps out underneath you. While Moe works, the
+send arrow beside the box becomes **■**: press it, or **Esc**, to stop the
+job. The box to type in is always there. Anything you type while Moe is still
+on the last thing is held, shown in the chat as *Sends when Moe finishes*,
+and sent the moment it does; **×** beside it drops it, and stopping Moe drops
+it too. Answers are laid out here as in Chat: paragraphs, lists, and code in
+its own box with **Copy**. A table too wide for the panel shows as one line,
+*A table, 3 rows · Open in window*; click it to read it in Chat. The
+popped-out chat has the room and shows the table itself. Once the answer is in, what Moe did folds to one line under it,
+*3 steps · 48 s · 1 source*; click it to see the steps and the pages Moe
+read, and again to fold them. The **⋯** beside the send arrow slides out the
+rest of the controls.
 
 **Work silently.** When a long job is more talk than you want, click the
-speaker icon behind the **⋯**. It shows what is true now: a speaker while
+speaker icon behind the **⋯** beside the send arrow. It shows what is true now: a speaker while
 Moe is saying what it does, a crossed-out speaker, filled in white, once
 you have turned that off. For the rest of that job Moe stops saying what
 it is doing, and when the job is done it says only the answer. The step it
@@ -666,8 +778,7 @@ fetches it with a bar, a percentage and a
 Cancel. Until it is here Moe keeps speaking with Kokoro, and the voice you picked
 is used the moment it lands. Stop a download and what has arrived stays; the
 next Download carries on from there. **Premium**
-is the best voice Moe has, the most natural and the quickest to answer,
-rendered in the cloud and streamed back as it speaks. It is part of the Away
+is Moe's cloud-rendered voice, streamed back as it speaks. It is part of the Away
 plans; picking it on the free plan opens Settings › Upgrade.
 
 Each set starts on a voice chosen by ear, and you can change it whenever you
@@ -696,11 +807,16 @@ rather than per Mac and reset on the 1st:
 
 | Plan | Spoken | Listening |
 |---|---|---|
-| Away | 500,000 characters | 6 hours |
-| Away+ | 1,500,000 characters | 20 hours |
+| Away | 300,000 characters | 6 hours |
+| Away+ | 1,000,000 characters | 12 hours |
+
+If you need more in a month, a **voice pack** adds 150,000 characters and 2
+hours of listening for the rest of that month, for $5, from Settings › Away.
 
 Moe never holds the keys to those services: it asks for a single-use token
-each time it opens a connection. While *Hey Moe* is listening, Moe keeps one
+each time it opens a connection. Each connection to the premium voice
+counts as at least 100 characters, which what Moe then says is taken out of
+first, so in ordinary use the count is simply what was spoken. While *Hey Moe* is listening, Moe keeps one
 fresh token ready, so starting to talk never waits on fetching one. The
 premium voice gets its connection ready as soon as you start talking, so
 the first answer after a quiet spell starts as quickly as any other. On a
@@ -769,7 +885,7 @@ and only while it is on.
 Language), *While Moe works* (Say "on it", Tell me what it's doing, Ding when
 a written answer is ready), *Answers* (which questions are answered out
 loud, written answers, the island panel and how long it stays, Typed
-questions open the Chat window) and *Your voice and Premium* (Teach Moe your
+questions open the Chat window, Hovering the notch opens it) and *Your voice and Premium* (Teach Moe your
 voice, Premium hearing and voice). Each is described in its own section on
 this page. The switches about your screen are in Settings › Permissions,
 under *Moe and your screen*.
@@ -788,11 +904,13 @@ Press **+** beside the message box in Chat and choose where it comes from:
 - **Recent on this Mac** — the three newest things in Downloads and on your
   Desktop, one click each.
 
-Or drag files anywhere onto the conversation. What you have added waits
+Or drag files anywhere onto the conversation, or press **⌘V** in the box
+with a picture or a file on the clipboard: it is added, not pasted as its
+name. Copied words still paste as words. What you have added waits
 above the box, with an × to take any of it back, until you send, with words
 or on its own.
 
-The panel under the notch has the same **+**, without the recent files, and
+The panel under the notch has the same **+** and **⌘V**, without the recent files, and
 you can drag a file onto the notch itself: it opens as the file arrives and
 stays open until you let go. Once something is waiting in its box it stays
 open, so you can say what the file is for.
@@ -818,13 +936,48 @@ links" and you get exactly these.
 In Chat, what you said is on the right, in a tinted bubble, and Moe's
 answers are on the left under its name. Notes that belong to neither of you,
 like *Stopped.*, sit in the middle. Under an answer, a small chip says what
-Moe did to get there, *3 steps*, and opens into the list; code Moe writes
-gets its own scrolling box. Next to Moe's name on each answer, **▶** reads
+Moe did to get there and how long it took, *3 steps · 48 s*, and opens into
+the list. When the model you use shows its thinking, that is in the list
+too, folded under **Thinking**; with no steps besides, the chip says
+*Thought it through*. Most plans and models do not show it, and then
+nothing appears. Answers are laid out the way they were written: each line its own
+paragraph, lists with their bullets or numbers in a column of their own so
+a long item wraps under its text, tables as tables, and code in a box of its
+own, in a fixed-width font, with its language and a **Copy** button. Hebrew
+and Arabic read right to left, paragraph by paragraph, in your bubbles and in
+Moe's answers alike, even a line that starts with an English word; English
+in the same message keeps to the left, and code always reads left to right.
+The same goes for the panel under the notch and the popped-out chat. Times are shown the way
+your Mac shows them, in 12- or 24-hour time. The bar at the top of Chat
+carries the conversation's name, and beside it the model this chat uses.
+Click it to choose another of the models your AI service offers, for this
+chat only; the menu marks your default, and **Back to the default** puts
+the chat back on it. Every other chat keeps the default you chose in
+Settings › Brain. Change the service itself in Settings and each chat
+goes back to that service's default. Next to Moe's name on each answer, **▶** reads
 it aloud in Moe's voice, even when typed answers are set to stay on screen.
 While it plays, ▶ becomes **⏸**; pressed, it pauses there, and ▶ again
 carries on from the same word. **↺** starts it over from the top. Tapping the
 hold key pauses and resumes it too. **⋯** copies the answer, or reads it
 from the top.
+
+**While Moe works.** The newest line of the conversation says what Moe is
+doing right now, *Thinking* and then the step ("Opening OpenTable"), with a
+clock and a **Stop** button. The send arrow becomes a **■** while Moe works and
+the box is empty: press it, or **Esc**, to stop. Type while Moe works and the
+arrow comes back; what you send then waits in the conversation, dimmed, under
+*Sends when Moe finishes*, with **Send now** (stop the job and send this
+instead), **Edit** (put it back in the box) and **×** (don't send it).
+
+**Buttons under the newest answer.** When Moe has written a draft for you,
+an email or a message, **Send**, **Edit** and **Copy** sit under it.
+**Send** tells Moe to send it as it is; you still see and confirm what goes
+out before anything is sent. **Edit** puts the draft in the box to change
+and send back, and **Copy** copies just the draft. When the answer ends by
+offering to do something (*Want me to add it to your calendar?*), **Yes, do
+it** answers for you. When Moe could not answer, **Retry** asks the same
+question again. The buttons are on the panel under the notch and in the
+popped-out chat too, and only on the newest answer.
 
 **Copying.** Right-click any message, yours or Moe's, in Chat or on the
 island, for **Copy message** or **Copy conversation**. To select across
@@ -832,6 +985,11 @@ several messages, press **Select** in the bar at the top of Chat: the
 conversation becomes one page you can drag across, or ⌘A for all of it,
 and you stay at the latest message. **Done** goes back. **Copy all** beside
 it copies the whole conversation.
+
+**With VoiceOver.** Each message is one stop, read as who said it, when,
+and what it says. Its actions, from the VoiceOver rotor, are **Copy**,
+**Read aloud**, **Show the steps** and one to open each page Moe read. When
+an answer finishes, VoiceOver reads it out.
 While a spoken conversation is open, a bar above
 the box says whose turn it is, *Your turn — just talk, no wake word needed*,
 *Thinking…*, *Speaking…*, with **End conversation** beside it.
@@ -852,7 +1010,10 @@ this Mac*, with a dot and one line saying how it is: *Working, on Sonnet.*
 sign-in.*, *Not signed in yet.* or *Starting…* while it is not; and, while a
 change goes through, *Saving…*, *Switching to ChatGPT…* or *Checking Opus…*
 until the verdict lands: *It works. Moe is thinking with Claude (Opus).*, or
-a plain sentence about what went wrong. If a sign-in is outstanding, the
+a plain sentence about what went wrong. When a change could not be saved it
+says that, that nothing was changed, and what to try (*Moe couldn't save
+that key… Check it is the whole key…*), never the technical output behind
+it, which Moe keeps in its log. If a sign-in is outstanding, the
 button for it is right there: **Sign in with Claude…** or **Sign in with
 ChatGPT…**. Under the name, one sentence on what this way of paying costs,
 *Nothing on top of the plan you already have.*
@@ -920,6 +1081,16 @@ Claude, changing it restarts Moe's thinking part, which takes a few seconds;
 on a key it takes effect on your next question; a local model that does not
 think ignores it. A model with no levels shows no row.
 
+A question you ask **out loud** starts at the lowest level your account has,
+whatever is chosen here, because after you stop talking you hear nothing
+until Moe has its first words. Where an account can switch thinking off for a
+moment, it is off for that question; where it cannot, it runs at its lowest
+level. On a Claude plan this covers only the opening: once Moe has said its
+first words or started looking something up, the level you chose is back for
+the rest of the work. A question you **type** always runs at the level you
+chose. If spoken answers seem less careful to you, tell Moe so: that reaches
+us as a problem report, and this can be switched off for your Moe.
+
 ### How long Moe may work on one thing
 
 On a Claude plan, a row of four chips: **5 minutes** (*Quick jobs only*),
@@ -952,7 +1123,7 @@ Settings until it is fixed: the account card on this page carries an amber
 line, *OpenAI turned down the key*, followed by the one next thing to do,
 and Connections stops calling Moe's brain *Working* while it plainly is
 not. It clears itself the moment Moe answers anything at all; there is
-nothing to dismiss and no need to restart Moe.
+nothing to dismiss and no need to restart Memoe.
 
 A question your provider simply refused to answer, a safety filter, is said
 in the chat (*"Gemini wouldn't answer that one. Try asking it a different
@@ -992,7 +1163,10 @@ Moe is a voice assistant that you can also type to, and it tells the
 difference: a question asked out loud comes back out loud and short; a
 question typed comes back written, at the length it needs. *Moe's answers*
 in **Settings › Voice**, and the *Answers* and *While Moe works* groups under
-its **More**, are where that is decided.
+its **More**, are where that is decided. It holds to that however long the
+conversation runs: Moe is reminded of how to answer you at the start and
+again every twenty messages, so an afternoon-long conversation ends the way
+it began.
 
 ### Who Moe is
 
@@ -1102,19 +1276,29 @@ question in it; a click in another app folds it at once either way.
 
 **Clicking the island opens it, and does nothing else.** A click on the
 notch opens the panel and keeps it open; a click on the panel's own space
-does nothing. The whole conversation is in the Memoe window: the window
-icon behind the **⋯**, or the menu bar. Anything Moe brought up on its own
+does nothing. The whole conversation is in the Memoe window: press **⌘J**,
+or the window icon behind the **⋯**, or use the menu bar. ⌘J and the window
+icon take what you had typed and any files waiting in the box with you, into
+Chat's box. Anything Moe brought up on its own
 waits in the [inbox](#your-inbox): the tray icon at the top of the panel, with
 a count. The panel always opens on your conversation, never on a card.
 
 To close it yourself: the **⌃** button in the top right, or **Esc**. Folding
 is only folding; it leaves Moe alone and the conversation where it was. To
-stop Moe, use the stop icon behind the **⋯**. On a Mac with a notch the ⌃
+stop Moe, press the **■** that takes the send arrow's place while it works,
+or **Esc**. On a Mac with a notch the ⌃
 and the one-word status sit in the black strip beside the notch. The panel
 shows the conversation, yours on the right and Moe's on the left, a
 **new conversation** button beside the ⌃ (the one on screen is kept in
 Chat), and a box to type in whenever you can
 use it, with an arrow to send and a **+** that takes a photo or a file.
+
+**A conversation left alone for an hour is put away.** The next thing you
+say starts a fresh one, so Moe answers quickly instead of re-reading a
+long thread first. The old one is kept in Chat, and Moe's memory still
+knows what was said. It never happens while Moe is answering, while you
+are in a meeting, or while the panel or a Moe window is open in front of
+you.
 
 Anything Moe needs you to see before the conversation, a call it can record, a new version of Memoe ready to install, or the
 talk key waiting on Accessibility, sits at the top of the panel, and the
@@ -1146,15 +1330,60 @@ black "ears" either side, and everything is white or grey.
   red dot, the one colour the notch keeps, because it is about your privacy.
   Off the record, the dot turns grey; when someone says your name it flashes
   white twice. Action items Moe spots appear on the right.
-- **Dictating**: a text cursor and the bars on the left.
 
 Each side stays narrow at rest, so it covers as little of the menu bar as it
 can. Open the panel and it simply drops down in black, with no light around
 it.
 
+### Popping the chat out of the notch
+
+If the panel under the notch is in the way, take the chat out of it and put
+it anywhere. Three ways do it:
+
+- the **pop-out** button in the panel's header, beside the ⌃;
+- **Pop Out Chat** in the Moe menu, or in the menu bar icon's menu;
+- **⌃⌥P**, from any app.
+
+The chat opens in a window of its own, the first time in the top-right corner
+of the screen. It is the same conversation, not a copy: the same messages,
+the same **⋯** controls, the same box to type in (with whatever you had half
+typed), and the same **+** for photos and files, whose pickers open in front
+of the window on the desktop you are on. You can also drop a file anywhere
+on the window.
+
+- **Move it** by dragging its header, to any part of any screen.
+- **Resize it** from any edge or corner. Widen it and the conversation
+  widens with it.
+- **It stays over every app**, on every desktop and over apps in full
+  screen. Clicking it, scrolling it or pressing its buttons leaves the app
+  you are in in front; clicking into the box to type gives it the keyboard.
+- **Keep on top** is the pin in the header. Turn it off and the window
+  behaves like any other, so the app you click covers it. Right-click the
+  header for **See-Through When Not in Use**, which fades the window
+  slightly while you are working somewhere else.
+- **Close it** with the **✕** or **Esc**. Closing is only putting it away:
+  the conversation carries on, and a click on the notch, **⌃⌥P**, or an
+  answer Moe wants you to see brings it back where you left it.
+- **Put it back** with the **put back in the notch** button in its header,
+  **Put Chat Back in the Notch** in the Moe menu, or **⌃⌥P** while it is in
+  front of you. The panel opens under the notch again with the conversation
+  in it.
+
+While the chat is out, the notch shows only its usual small signs, and
+hovering it or clicking it brings the window to the front, even over a
+full-screen app (hovering only while **Hovering the notch opens it** is on). A meeting still
+uses the notch's own panel. The window remembers where you
+put it on each display, and comes back to the same place, kept fully on
+screen if the display has changed. If you quit Memoe with the chat popped
+out, it stays out next time, and opens when you first want it.
+
+On a 16-inch MacBook Pro the strip beside the notch has room for one fewer
+button, so there the pop-out takes the place of **new conversation** in the
+panel's header; **new conversation** is still in the popped-out window.
+
 ### While Moe is working
 
-These four are under **More** in Settings › Voice.
+These five are under **More** in Settings › Voice.
 
 - **Say "on it" as soon as I ask** — off to start with. Said the moment you
   finish asking, before Moe has started on the answer, so you know it heard
@@ -1171,6 +1400,9 @@ These four are under **More** in Settings › Voice.
   panel under the notch, on whatever you were reading; a question asked
   while looking at your notes is often about the notes. On, every question
   you type opens Chat, where a long answer has room.
+- **Hovering the notch opens it** — on. Resting the pointer on the notch
+  opens its small panel, or brings the chat window forward when the chat is
+  popped out. Off, hovering does nothing and only a click opens it.
 
 **Handing a job off.** Say "in the background", or ask for something that
 is plainly a long job you do not need to sit through, and Moe hands it to a
@@ -1189,7 +1421,7 @@ during a meeting. The outcome comes back in the conversation you handed the
 job off from. If you have moved to another conversation by then, Moe says in
 the one you are in which conversation it belongs to, and offers it on the
 island: play it and that conversation opens and Moe tells you there. Signing
-in to a different Claude or ChatGPT account, or choosing a different AI in
+in to a different account, or choosing a different AI in
 Settings, keeps the conversation you are in, and the helpers you started in
 it. The chat stays on screen and Moe carries on from where it was. Changing
 only how hard Moe thinks still starts a fresh conversation.
@@ -1225,6 +1457,13 @@ check"), never when Moe itself stopped the work (for instance after your
 Mac slept in the middle of something that sends or pays), and never more
 than once for anything you asked.
 
+**If no answer comes back, Moe says so.** Now and then the part of Moe
+that thinks ends a turn without a word. Moe does not leave you looking at a
+quiet panel: it says *I couldn't answer that. No answer came back. Ask me
+again.* (out loud if you asked out loud, and in the chat either way). If it
+had already started sending or changing something when that happened, it
+says to check what it did before you ask again.
+
 **You can always say the next thing.** Moe does a few things around an
 answer that you never see, going back over the conversation for anything
 worth remembering, keeping its notes in order, and none of them hold the
@@ -1259,6 +1498,16 @@ the offer is more than a day old. These cards move to *Done* with a word
 saying why (*Meeting started*, *Settled*, *No longer current*), so you can
 still find them.
 
+**Every card has something to tap.** A card is something Moe can finish
+with you in one tap: a reply it has drafted, answers to choose from, a send
+waiting for your yes, a job of yours that finished, a follow-up to close or
+snooze. Your own reminders and routines always arrive, because you asked
+for them, and so does anything Moe was told to bring to you. A plain "just
+so you know" becomes a card only when it cannot wait. Everything else Moe
+would have said stays quiet: no glow, no line by the notch. It is not
+thrown away; it is under *Done this week* on the Inbox page for a week,
+marked *Kept quiet*, with all its words.
+
 **What Moe does not bring up.** Anything you already have in front of you.
 A new email, WhatsApp, Telegram or text is never passed on as it arrives:
 you see it in its own app. Moe raises a message only when a person has
@@ -1278,8 +1527,10 @@ read out, and whatever you were doing on the island stays where it was.
 
 **Open the island** and you see your conversation, as always. The **tray
 icon** at the top carries a count. Press it and the conversation turns into
-the inbox; press it again to go back. *Needs you* comes first, then *For your
-information*. Each item says what kind it is, and its buttons fit it:
+the inbox; **‹ Chat** at the top of the inbox takes you back, and it is
+there even while Moe is working. Closing the panel leaves the inbox too, so
+the next time you open it you are back in your conversation. *Needs you*
+comes first, then *For your information*. Each item says what kind it is, and its buttons fit it:
 
 - **Reminder**: **Done**, **Snooze** (15 minutes, an hour, this evening,
   tomorrow morning) or **Reply**.
@@ -1327,7 +1578,17 @@ is about what you were just talking about, Moe answers there instead.
 **All**, **Needs you**, **Reminders**, **Ready** or **Briefs**, with what is
 snoozed and what you finished this week below them. A dot marks what you
 have not looked at yet. Selecting one shows the same card, so it works the
-same wherever you open it.
+same wherever you open it. With the keyboard, Tab to the list and ↑ and ↓
+walk it, the card on the right following.
+
+**With VoiceOver.** Each card is one stop, read as a sentence (*Unread.
+Reminder. Call the dentist before five. 3:00 PM*), and its buttons are its
+actions, so Done, Snooze, Archive and the rest are in the Actions menu
+instead of being five more stops. The same goes for the cards in the panel
+under the notch. If you have **Reduce Motion** on in System Settings ›
+Accessibility › Display, a finished card simply goes instead of sliding
+away, and the same is true of the questions on the Memory page and the
+switches in Settings.
 
 **Clearing many at once.** Above the list, **Mark all read** clears every
 unread dot, and **Archive all** moves everything waiting (under the filter
@@ -1356,6 +1617,59 @@ that can change, a price, a slot, a delivery, which Moe watches without
 thinking and speaks about only when they move. How it works, and the
 switches for it, are under [Running in the
 background](#running-in-the-background).
+
+### Knowing where you are
+
+Ask "what's the weather", "is there a pharmacy near me" or "how long to
+drive to Newark" and Moe needs to know where you are. It uses your Mac's own
+location for that, the same one Maps uses, so the answer is for the town you
+are actually in.
+
+The first time a question needs it, macOS asks whether Memoe may use your
+location. That is the only time it is asked: not when Moe starts, and not in
+the welcome. **Allow**, and Moe answers; from then on it just knows. **Don't
+Allow**, and Moe keeps working: it asks you where you are, or goes by the
+rough place your internet connection gives, which can be a town or two off,
+and tells you that is what it used. It never quietly guesses.
+
+What Moe gets is the town, region and country, and a position rounded to
+about a kilometre. An exact position is used only when the question needs
+one, such as directions from where you are. Your location is read only while
+you are at the Mac asking: never in the background, never for a scheduled
+job, and not when you message Moe from your phone, since your phone is not
+where your Mac is. It is not sent to us, Moe keeps no log of where you have
+been, and it does not add where you are to its memory unless you tell it
+where you live.
+
+To change your mind either way: **Settings › Permissions › Location
+Services**, or System Settings › Privacy & Security › Location Services.
+
+### Moe changes its own settings
+
+Moe knows every switch in Memoe's Settings, so you don't have to. Tell it
+what bothers you in your own words ("stop dinging at me", "your answers are
+too long", "the notch keeps popping open") and it finds the setting, says in
+a sentence what it is, and offers to change it. You never have to know
+there is a setting, or where it lives.
+
+- **Moe can change it for you** — how much it says, sounds, how long the
+  panel stays, how the notch and Chat open, how it listens once you have
+  started talking, reminders it brings up, quiet hours, and whether it looks
+  at what's connected every 10 minutes. It changes one
+  only after you say yes, tells you what it changed, and puts it back if
+  you ask. A change that makes Moe do more — speak its answers, bring
+  things up on its own, listen longer, a new talk key — also shows you a
+  confirmation first, so nothing Moe reads can turn those on for it.
+- **You flip it yourself** — anything to do with the microphone, your
+  screen and moving your mouse, money (Premium voice), which AI Moe uses,
+  your language, anything sent to your chats for you, what Moe learns about
+  you and keeps as memory, which browser profile it signs in as, and the
+  area of the screen meeting pictures take. For these, Moe
+  offers to open Settings: the window opens on the right page with the row
+  highlighted, and you make the change.
+
+Moe changes or opens Settings only while you are at your Mac. From your
+phone it tells you where the setting is instead.
 
 ## Driving your Mac
 
@@ -1416,10 +1730,21 @@ extension (see [Moe in your Chrome](#moe-in-your-chrome)); without it, Moe says
 so and offers to do it on your screen with you watching. With Safari, Firefox or Arc as your default,
 Moe browses signed out, because it has no profile it can copy. Change your
 default browser and Moe follows at its next launch. Away from your Mac, Moe
-has the same browser but not your profile. Its browser there keeps its own
-sign-ins from one day to the next, on your cloud computer and nowhere else: a
-site it has been signed in to stays signed in, and everything else it
-browses signed out.
+has a browser of its own on your cloud computer, but not your profile: it
+starts with no sign-ins, a site you sign it in to stays signed in only if
+the site is on the list in **Settings › Away › Cloud browser**, and
+everything else it browses signed out (see [The cloud
+browser](#the-cloud-browser)).
+
+**When your signed-in browser won't open.** Now and then Moe can't open its
+browser with your logins. It no longer stops dead, and it never carries on
+quietly without them: it tells you why and asks whether to continue signed
+out. Before anything runs signed out, a card on your Mac asks *Continue
+signed out?* Say yes and Moe carries on, and that one yes covers the rest of
+the conversation. Say no and nothing runs. Whatever Moe does signed out, it
+tells you was not done as you: a site sees a stranger, not your account. A
+scheduled job that meets this while you are away does not wait and does not
+continue. It tells you what is waiting.
 
 **Signing in on your cloud computer.** When a site there needs you (a
 password Moe doesn't have, a code, "is this you?"), Memoe sends a link to your
@@ -1428,7 +1753,9 @@ own chat, never to anyone Moe is talking to, and Moe itself never sees it. Open 
 the browser**; you see the page as it is on your cloud computer, and you tap
 and type into it as you would on any site. Your password goes to the site,
 not to Moe. Tap **Done**, tell Moe, and it carries on. The sign-in stays there
-for every later job. The link works for ten minutes, only on the first phone
+for later jobs if the site is on your **Cloud browser** list in Settings ›
+Away; otherwise it lasts for that one job, and Moe says so. Passkey-only
+sign-ins, with no password, cannot be done this way. The link works for ten minutes, only on the first phone
 that opens it (a forwarded copy won't open), and a newer link ends the older
 one. Treat it like a key: don't share it.
 
@@ -1452,10 +1779,8 @@ retrying the site. It never switches the proxy off for you; turn the proxy
 off there, or start whatever it points at.
 
 For the picture puzzles ("click every square with a bus"), Moe can use a
-solving service on your own account: set `browser.captcha.solver` to
-`nopecha` or `capsolver` in Moe's Hermes settings and put that service's key
-in `~/.hermes/.env` (`NOPECHA_API_KEY` or `CAPSOLVER_API_KEY`). Only the
-puzzle's picture is sent; Moe clicks the squares itself, in its own browser,
+solving service on your own account, NopeCHA or CapSolver, once that
+service's key is added to Moe's settings. Only the puzzle's picture is sent; Moe clicks the squares itself, in its own browser,
 and tries at most three rounds on one puzzle. hCaptcha's puzzles are read
 straight from the picture on the page; a puzzle that moves or asks you to
 drag something is swapped for a new one (a few times, free) rather than sent
@@ -1611,26 +1936,38 @@ start; Chrome shows a bar while it does.
   Chrome" started debugging this browser* across the top. That is Chrome saying an extension
   is at work; it goes when Moe is done.
 
-**Setting it up.** Open **Connections › Moe in your Chrome** and click **Set
-up**. Moe puts the extension in its own folder, tells Chrome how to reach it,
-opens Chrome's Extensions page and shows the folder in Finder. In Chrome:
+**Setting it up.** Open **Connections › Moe in your Chrome** and click **Add
+to Chrome**. Memoe tells Chrome how to reach it and opens the extension's page
+on the Chrome Web Store in your Chrome. There, click **Add to Chrome**, then
+**Add extension**. The row turns to **Connected** within a few seconds, and
+Chrome keeps the extension up to date from then on. If the store page did not
+open, click **Add to Chrome** again. Without Google Chrome on the Mac, the
+button says to install it first and changes nothing.
 
-1. Turn on **Developer mode**, at the top right of the Extensions page.
-2. Click **Load unpacked**.
-3. Pick the **chrome-extension** folder Moe showed you.
+**What the row says.** It names what is wrong, not just that something is:
 
-The row turns to **Connected** within a few seconds. If the Extensions page
-did not open, type `chrome://extensions` into Chrome's address bar. (When the
-extension is in the Chrome Web Store, Set up opens its page there instead.)
+- **Not installed** — the extension is not in your Chrome yet: **Add to Chrome**.
+- **Installed, not connected** — it is in Chrome, and Memoe is ready for it,
+  but it has not connected. Chrome may be closed (**Open Chrome**), or the
+  extension is in a Chrome profile that is not the one open: open that
+  profile, or add Memoe to the one you use.
+- **In another Chrome profile** — Memoe can see the extension is only in a
+  profile that is not open, and names it. **Add to this profile** opens the
+  store page in the profile Chrome is using.
+- **Installed, can't reach Memoe** — the extension is in Chrome, but the link
+  Memoe gives Chrome is missing, out of date or broken, so the two cannot talk.
+  **Repair** rewrites it. Memoe also mends an out-of-date link by itself each
+  time it opens.
+- **Off** and **Connected**. If it also says Chrome lets the extension open
+  files on your Mac, turn off **Allow access to file URLs** under Chrome ›
+  Extensions › Memoe; Moe never uses it.
 
-The row reads **Not installed**, **Installed, not connected** (the extension
-is not loaded, or Chrome is closed) or **Connected**. If it also says
-Chrome lets the extension open files on your Mac, turn off **Allow access to
-file URLs** under Chrome › Extensions › Memoe; Moe never uses it. After
-Memoe updates, the row can say **Update available**: click **Update**, then
-**Reload** on Memoe in Chrome's Extensions page, so the extension matches the
-new Memoe. Without Google Chrome on the Mac, Set up says to install it first
-and changes nothing.
+**In Chrome, too.** When the extension cannot reach Memoe, its toolbar button
+shows a red **!**; hold the pointer over it to see why (Memoe isn't set up for
+Chrome, Memoe doesn't recognise this copy yet, or its link stopped) and where
+to fix it. Click the button to try again; the **!** goes as soon as it
+connects. And if you ask Moe to use your Chrome while it cannot, Moe tells you
+which of these it is rather than only that it failed.
 
 **Turning it off.** **Turn off** on the same row stops Moe using your Chrome
 within a few seconds. The extension stays in Chrome until you remove it there
@@ -1716,6 +2053,11 @@ looked. Nine rows, in the order they tend to come up:
 - **Screen & System Audio Recording** — seeing your screen when you ask
   "what do I do here", and recording the other side of a call in a meeting.
 
+Under those, **Location Services** — which town you are in, for the weather,
+"near me" and directions. It says *Not asked yet* until the first question
+that needs it, because that is when macOS asks; see [Knowing where you
+are](#knowing-where-you-are).
+
 The word beside each name is the state: **Allowed**, **Not allowed**, **Not
 asked yet** (nothing is broken; Moe has not needed it yet) or **Can't
 tell**. Input Monitoring and Automation always say *Can't tell*: macOS gives
@@ -1725,10 +2067,11 @@ again.
 
 **How do I?** on a row (**Details**, on one that is allowed) opens what it
 is for, what happens if you say no, the click path in System Settings, and
-**Open the settings pane**, which takes you to the right place. The four
-permissions macOS only reads when an app launches, Accessibility, Input
-Monitoring, Full Disk Access and Screen Recording, also offer **Quit and
-reopen Moe**. On Accessibility alone there is one more: if System Settings
+**Open the settings pane**, which takes you to the right place. The three
+permissions macOS only reads when an app launches, Input Monitoring, Full
+Disk Access and Screen Recording, also offer **Quit and reopen Memoe**.
+Accessibility does not: it works the moment you switch it on, and the pane
+says so. On Accessibility there is one thing more: if System Settings
 shows Moe switched on and this still says Not allowed, that switch belongs
 to an older copy of Memoe; **Reset and ask again** clears it, and you switch
 Moe on once more.
@@ -1746,7 +2089,7 @@ denied to start with, because a voice assistant has nowhere to show you an
 approval dialog mid-sentence, so the safe default is that nothing leaves
 your machine. **Edit the permission rules** opens the file those rules live
 in, where you can move a line from deny to allow when you decide you want
-it; restart Moe afterwards. It is a guard rail, not a sandbox: the real
+it; restart Memoe afterwards. It is a guard rail, not a sandbox: the real
 protection is that outbound actions are off until you say otherwise, and
 what stands in front of a send when you do is the next page.
 
@@ -2023,7 +2366,7 @@ reach you its own way, or to put it in its reply. Who "you" are is written
 down on your Mac from the accounts you have linked (your own Telegram, the
 WhatsApp number this Mac is linked as, the Google account you signed in
 with, the mailboxes Moe reads — including Gmail connected through Composio —
-your Mac account's name, and any nicknames you add), in `~/.moe/owner.json`.
+your Mac account's name, and any nicknames you add), in Moe's own folder.
 
 **Replies Moe prepared for you.** When you press **Use draft** on a reply
 Moe offered and it is not sent, the chat says why in words — the offer was
@@ -2055,6 +2398,13 @@ That memory is per tool: allowing a Sheets edit says nothing about Tasks,
 and nothing you allow ever silences the send sheet. Moe's own housekeeping,
 closing a follow-up you have answered, moving a reminder, asks nothing at
 all.
+
+Moe cannot change the check itself. The files that decide whether to ask
+you, and the list of what you have allowed, are refused to it outright, by
+whatever name or route it reaches for them, and so is moving or deleting the
+folder they sit in. There is no dialog for that, because it is not a
+question you should be handed. The list of what you allowed is yours to
+change, in your own Terminal.
 
 ## Meetings
 
@@ -2281,8 +2631,27 @@ cheapest model. If your account refuses that model, Moe asks again on yours.
 **If the notes fail.** Your AI gets a second attempt before Moe gives up. If
 both fail, the transcript is still saved and the Meetings page says what
 came back instead of the notes, so you can tell a model that refused from
-one that was never reachable. A meeting Moe was quit in the middle of keeps
-its recordings and transcript, marked incomplete.
+one that was never reachable.
+
+**Write the notes, later.** A meeting that ended without notes (they took
+too long, your AI was not reachable, or the meeting was stopped early) is
+not stuck that way. Open it on the Meetings page and press **Write the
+notes**: your AI reads the saved transcript and writes them now. It can take
+a couple of minutes for a long meeting, and you can leave the page while it
+works. If it does not work, the page says why in a sentence and the button
+becomes **Try again**; the transcript is never changed, and nothing else
+about the meeting is touched until the notes are really written.
+
+**Quitting during a meeting.** Quit Memoe while a meeting is recording and it
+asks first: **Stop and Write Notes** ends the meeting, writes the notes and
+then quits by itself; **Quit Anyway** quits now; **Cancel** carries on
+recording. It asks the same way if you quit while the notes are still being
+written. While it waits, a small window says what for (*Writing your
+meeting notes*), with **Quit Now** if you would rather not wait. If you have
+the notes sent to your Telegram, Memoe also waits for that send to finish,
+for up to twenty seconds, and the window counts it down; the notes are on
+your Mac either way. A meeting Memoe was quit in the middle of keeps its
+recordings and transcript, marked incomplete.
 
 **A meeting can become something Moe knows.** When the notes are written,
 Moe hands them to its thinking part as a quiet background note: it sat in
@@ -2529,6 +2898,14 @@ this Mac, replaced each time, so "what's on" is instant:
 Nothing is kept beyond the latest copy, and switching a source off removes
 its copy. Off, Moe reaches your things only when you ask it something.
 
+A conversation is told that copy once, in full, and after that only what
+has changed in it: the message that arrived, the task that left your list,
+the meeting that is now ten minutes away. Moe re-reads its side of a
+conversation before every answer, so a conversation that was handed the
+whole copy again every ten minutes took longer and longer to answer. In a
+long conversation the whole copy is given again every twenty messages, so
+nothing is lost along the way.
+
 **Moe always knows what time it is.** Every message Moe is given starts
 with the time where you are — *Wednesday 23 September 2026, 6:08 PM
 (evening), New York time* — whether you spoke, typed, or wrote from
@@ -2683,6 +3060,15 @@ separate charge, so those lines show the work rather than a price; a key
 you pay per use is priced from published rates, which is an estimate and
 not your bill. The fuller record, conversations included, is
 [Activity](#activity).
+
+Each of Moe's own jobs also says when: *Last ran 2 h ago.* while it is
+working, *Has not worked since Tuesday.* when its runs have been failing,
+and *Has not run since Tuesday.* when it has stopped running at all. That
+last one is the case nothing else here would show you, because a job that
+never runs never fails. If Moe's own look at its jobs has stopped, the list
+says so in one line rather than leaving old times standing. None of this is
+ever a card in your inbox or a sound; it is here for when you wonder why
+Moe has gone quiet about something.
 
 ### When something Moe runs goes wrong
 
@@ -2926,6 +3312,12 @@ for this Mac*, *Installed from a registry*, and, if Moe has ever opened it,
 how many times and when. This page does not install, write or delete
 skills.
 
+**Your skills are the same on Moe Away.** Every skill on your Mac is on your
+cloud computer too, and a skill Moe writes or improves there comes back to
+the Mac. If the same skill was changed on both, the newer change wins. A
+skill deleted on one side is deleted on the other, and the deleted copy is
+kept aside rather than thrown away.
+
 ### Sounding like you, not like a chatbot
 
 Ask Moe to make something *sound like you*, *less like a chatbot*, or *more
@@ -2968,7 +3360,7 @@ Then, over **Today**, **This week** or **Last 30 days** (the default):
   rate, where it is billed at all, so one combined total would look like a
   bill and be almost entirely re-reading.
 - **What it cost**, in three honest buckets. *Covered by a plan you already
-  pay for* is the conversations your Claude or ChatGPT plan settled by the
+  pay for* is the conversations your AI subscription settled by the
   month; they have no per-token price, so none is shown. *Billed per token*
   is the smaller models Moe reaches for titles, summaries and background
   work, an estimate from a published price list, and where the actual
@@ -2992,14 +3384,69 @@ Then, over **Today**, **This week** or **Last 30 days** (the default):
 
 **Chat** in the main window is where you type to Moe and read what it
 said. The rail on the left, **Conversations**, lists your conversations by
-day; the pencil starts a fresh one (⌘N), and a right-click on one offers
-**Delete**. The box at the bottom says *Ask Moe*, or *Ask Moe — quietly*
+day; the pencil starts a fresh one (⌘N). **Search** at the top of the rail
+narrows it to the conversations with those words in their name or anywhere
+in them, archived ones included; **Esc** clears it. Right-click a
+conversation for **Pin**, which keeps it under **Pinned** at the top,
+**Rename…**, which lets you type its name in place (Return keeps it, Esc
+leaves it as it was), **Archive**, which moves it under **Archived** at the
+foot of the rail, and **Delete…**. The box at the bottom says *Ask Moe*, or *Ask Moe — quietly*
 while a meeting is recording; **+** beside it adds a photo or a file, the
 microphone button talks, and Return sends. An empty conversation greets
 you, *Hey. What's up?*, and says to hold the talk key or type.
 
 Delete a conversation and its key is destroyed on every device you use Moe
 on, so nothing can read it again.
+
+What you say to Moe on Telegram, WhatsApp, LINE, Email Moe and the other
+chat apps shows up here too, one conversation per chat, and a new one after
+six quiet hours, whether your Mac answered it or your cloud computer did.
+With Away on, those conversations reach your cloud computer, so it knows
+what you said to your Mac and you can search them on either side. A group
+chat Moe is in is never one of them: what people say in a group stays out of
+your conversations with Moe. Slack is the exception: Moe keeps what it
+learns there, never the words.
+
+### Changing a message you sent
+
+Click the pencil under one of your messages, or right-click it and choose **Edit message**. It comes back into the box,
+with a line above saying you are editing it; change it and press Return.
+The conversation is cut at that message: it and everything after it are
+gone, everywhere you use Moe, and Moe answers the new version knowing only
+what came before it. The conversation keeps its name, pin, model and tags.
+**Cancel**, or Esc, leaves it as it was. You cannot edit while Moe is
+still working on something.
+
+### Don't remember this chat
+
+The eye beside the conversation's name at the top of Chat is **Don't
+remember this chat**. Click it and it reads *Not remembered*: from your next
+message, nothing said in that conversation is saved to Moe's memory. Moe
+learns nothing about you from it, cannot write anything from it to memory
+when asked, and does not look back over it afterwards for things worth
+keeping. This holds on your cloud computer too. The conversation itself is
+still kept, in Chat and in your history, and Moe still remembers it while
+you are talking in it; it is only memory, the things Moe knows about you
+from one conversation to the next, that it stays out of. A conversation
+marked this way shows the same eye in the rail and is never tagged.
+
+It is per conversation: a new one starts remembered. Turning it on does not
+take back what Moe already learned from that conversation earlier; take
+anything you do not want out on the **Memory** page. Click the eye again to
+let Moe remember from that conversation once more.
+
+### Tags
+
+Once a conversation has gone back and forth three times, Moe gives it up to
+three short tags, like *travel* or *work email*, shown under its name in the
+rail. The tags you have appear as a row under **Search**: click one to see
+only the conversations tagged with it, archived ones included, and click it
+again to see them all. To take a tag off, right-click the conversation and
+choose **Remove tag**.
+
+Tagging is one small request per conversation, sent once, to the cheapest
+model of the account Moe thinks with, never your main model. Tags are kept
+on this Mac, beside your pins and names.
 
 ### Settings › History › Chats
 
@@ -3052,7 +3499,9 @@ notes**. Click a row and the right side shows that section: its name, one
 line saying what it is, and its lines, one under another with a thin rule
 between them. Nothing is boxed or tagged. The page remembers which section
 you were on while Moe is running, and a section with nothing in it says so
-in one quiet line.
+in one quiet line. That line means what it says: if Moe was not able to
+read what it knows, the page says *Moe couldn't look at what it knows about
+you just now* instead, and nothing has been lost.
 
 Hover over a line and, faintly under it, you see where it came from and
 when, *WhatsApp · Sep 21* or *Your words*, and at its end **Discuss** and
@@ -3368,7 +3817,12 @@ wrote under Memory yourself, never step out for age; after those, the
 newest entries are kept, and one long entry that does not fit no longer
 pushes out every shorter, older one behind it. The entries that step out are
 not deleted; they stay under Memory, and Moe brings one back when the
-subject comes up. Moe tidies
+subject comes up. It finds them by the words in your question that are rare
+in your memory, the dentist's name, *penicillin*, the name of a project,
+and not by the ones every sentence has; *what do you know about my
+accountant* brings back the line about the accountant, not three lines that
+happen to contain *what* and *you*. The line comes back exactly as it was
+saved. Moe tidies
 as it goes, merging two overlapping entries into one, dropping something
 that has stopped being true, so that what is read every time stays sharp.
 The reason for the tightness is that all of it is read before every single
@@ -3435,6 +3889,18 @@ read and act on for you: the apps already on this Mac, Google, and around
 1,400 other services. Everything on it works while the Mac is awake; asleep,
 Moe is asleep too, unless you have [Away](#away-moe-when-your-mac-is-closed).
 
+You can also just ask: "connect my Notion". When something you ask for
+needs a service that is not connected, Moe says so and offers to connect
+it. Say yes, confirm, and it gives you the sign-in link, from your Mac or
+your phone.
+You sign in on the service's own page, and it is connected the moment you
+finish. Moe never starts a connection you did not ask for.
+
+Connecting, disconnecting and checking a service are all done with the
+Python that ships inside Memoe, never one that happens to be installed on
+your Mac — so installing, updating or removing Python yourself changes
+nothing here.
+
 ### The page
 
 The list on the left is in a fixed order. **Thinking** at the top is the
@@ -3456,11 +3922,25 @@ Each row's second line is its state: **Working** (with *checked just now*
 on the detail pane), **Needs you**, **Not available yet**, **Couldn't
 check**, or, for something not yet connected, one line on what it does.
 Click a row and the detail pane says what Moe can do with it, which account
-is signed in (you can rename each account, *work* and *personal*), and the
-button that connects it: **Sign in**, **Paste a key**, **Connect**, **Turn
-on**, **Add a mailbox**, **Link my phone…**, or **Add another** once one
-account is in. **Disconnect…** is on the right: Moe forgets the sign-in and
-stops reading it; nothing at the service itself changes.
+is signed in (each account has **Rename**, for *work* and *personal*, and
+**Remove**), and the button that connects it: **Sign in**, **Paste a key**,
+**Connect**, **Turn on**, **Add a mailbox**, **Link my phone…**, or **Add
+another** once one account is in. **Disconnect…** is on the right: Moe
+forgets the sign-in and stops reading it; nothing at the service itself
+changes.
+
+The buttons stay at the foot of the detail pane whatever size the window
+is, and the page above them scrolls when it is longer than the window, as
+it is for a service with several accounts. In a narrow window the buttons
+stack instead of running off the side.
+
+If connecting fails, the sheet says what went wrong in a sentence and what
+to try next, and nothing is changed. When Moe could not make a secure
+connection to the service, it says *Moe couldn't make a secure connection to
+finish setting this up*: quit Memoe, open it again and try once more, and if
+it still fails, check that your Mac sets its date and time automatically
+(System Settings › General › Date & Time) and pause any VPN or web filter
+while you connect.
 
 The first time you connect a source, a small sheet asks *Let Moe learn
 from Notes and watch it for things you'd want help with?*, with **Yes** or
@@ -3523,7 +4003,7 @@ work** shelf (Slack, Teams, Zoom, GitHub, Salesforce, HubSpot, Jira,
 LinkedIn, Google Meet, Stripe, Figma…). Only services you can connect today
 are on the shelves: one sign-in, or a key from the service's settings.
 Everything else follows, still most popular first, and typing a name finds
-any of the ~1,500.
+any of the around 1,400.
 
 **Always on.** A few services need no sign-in at all: Yelp, Hacker News,
 OpenWeatherMap, AllTrails and GoDaddy's domain search. Their rows say
@@ -3574,8 +4054,16 @@ each Gmail account by its address, even one Composio never recorded a name
 for, so naming an address always reaches that account; name one that isn't
 connected and Moe says which ones are rather than sending from the default.
 Composio holds up to **five accounts per service**. At that limit, **Add
-another** says so, and disconnecting one you no longer use makes room. A
+another** says so, and removing one you no longer use makes room. A
 sign-in you started and never finished no longer takes one of the five.
+
+**Removing one account.** Each account's row has **Remove**. Moe asks
+first, naming the account (*Remove work@example.com from Gmail?*), then
+forgets that one sign-in; the others stay connected and nothing at the
+service changes. The list and the count of accounts update when the sheet
+closes. Removing the only account left is the same as **Disconnect…** and
+asks the same question. **Disconnect…** on a service with several accounts
+still asks which one.
 
 **Moe prefers the broker.** Where a service can be reached two ways, Gmail
 through the broker or through an app password on this Mac, Drive through
@@ -3612,11 +4100,18 @@ cannot quietly spend a month's worth of requests in an afternoon:
 | Plan | Calls an hour | Calls a day |
 |---|---|---|
 | Free | 50 | 150 |
-| Away | 100 | 300 |
-| Away+ | 200 | 600 |
+| Away | 100 | 200 |
+| Away+ | 200 | 500 |
 
-You are very unlikely to meet it by asking questions. If you do, Moe says
-which window ran out and starts again at the top of the next one; nothing
+What counts is what Moe does with a service: reading your mail, adding an
+event, sending a message. Before it does any of those Moe looks up which
+tool to use, and that looking-up is not counted, so one thing you ask for
+is one request and not two or three.
+
+You are very unlikely to meet it by asking questions. If you do, you see
+one plain line in the conversation, *Moe has reached this hour's limit of
+50 requests to your connected apps. It can use them again at 3 PM.*, once,
+and Moe starts again at the top of the next hour or day; nothing
 is disconnected. Moe reads which plan you are on from your account, and if
 it cannot reach us it keeps using the answer it last got for up to a month,
 so a few days offline costs you nothing.
@@ -3740,7 +4235,8 @@ Telegram account with an `@moe_…_bot` username of its own, and Moe picks it
 up from there. No BotFather, no token to copy anywhere. The link is good
 for about half an hour; if it goes stale Moe says so and gets you a fresh
 one. Then pair your phone: open the bot Telegram just showed you and send it
-any message; it appears on this page, you approve it, and you are done. The
+any message. While the sheet says *Finish in Telegram…*, your hello appears
+in it with an **Approve** button; press it and you are done. The
 bot's `@username` is the one thing Moe does not choose beyond that pattern;
 Telegram lets you change it yourself, in BotFather, if you care to.
 
@@ -3890,9 +4386,13 @@ they are; it does not keep what they said.
 
 When you message Moe on any of these, what comes back is the answer, not a
 running commentary on how Moe got there: no tool names, no step counts, no
-notes written for the people who build Moe. If something genuinely takes a
-while, Moe says so in its own words, an account of the work rather than a
-stock line. Interrupting
+notes written for the people who build Moe. Nor does Moe chatter about
+itself: no message when it restarts, shuts down, goes to rest or comes back,
+and no questions about its own disk space or housekeeping; the rare notice
+that is left says what happened in plain words. File names, commands and
+error codes stay out of its replies unless you ask for them. If something
+genuinely takes a while, Moe says so in its own words, an account of the
+work rather than a stock line. Interrupting
 still works: send something while Moe is busy and it changes what Moe is
 doing, without an announcement. On your Mac, the chips under Moe's reply
 and what it says out loud as it goes are unchanged; that is Moe's own
@@ -3932,7 +4432,7 @@ it was a voice note, so it can say so if it misheard.
 
 Listening to voice notes comes out of the same monthly **Listening**
 allowance as the [premium hearing](#premium-voice-and-hearing-on-paid-plans)
-(6 hours on Away, 20 on Away+), counted by the length of each note. The
+(6 hours on Away, 12 on Away+), counted by the length of each note. The
 recording is used once and not kept, and the written-out words travel
 sealed like everything else you send.
 
@@ -3942,8 +4442,8 @@ does not include Away, when this month's Listening allowance is used up,
 when a note is longer than 30 minutes, or if the listening service does
 not answer in time. A note from someone you have not let in yet is not
 listened to at all; they wait to be approved, the same as when they type.
-*Use the sharper voice and hearing that come with my plan* in Settings ›
-Voice is about your Mac's microphone and does not change this.
+**Premium hearing and voice** in Settings › Voice is about your Mac's
+microphone and does not change this.
 
 ## Away: Moe when your Mac is closed
 
@@ -3961,16 +4461,42 @@ travel sealed: the service in between carries them and cannot read them.
 |---|---|---|---|
 | Price | $0 | $20 a month | $50 a month |
 | Memoe on your Mac, everything on these pages | ✓ | ✓ | ✓ |
-| Your own computer in the cloud | — | ✓ | ✓ |
+| Your own private computer in the cloud, with a browser signed in as you | — | ✓ | ✓ |
+| Cloud computer hours a month | — | 150 | 400 |
 | Connected services checked on a schedule | — | ✓ | ✓ |
-| Calls to connected services, an hour / a day | 50 / 150 | 100 / 300 | 200 / 600 |
-| Premium voice and hearing a month | — | 500,000 characters, 6 hours | 1,500,000 characters, 20 hours |
+| Calls to connected services, an hour / a day | 50 / 150 | 100 / 200 | 200 / 500 |
+| Premium voice and hearing a month | — | 300,000 characters, 6 hours | 1,000,000 characters, 12 hours |
 
-Away+ is Away with larger allowances: three times the cloud voice and
-hearing, and twice the calls to your connected services. The thinking is
-the same on both, because it runs on your own AI account either way. The
-allowances count for the whole account, however many Macs, and reset on the
-1st.
+Your cloud computer rests when it has nothing to do, wakes when a message
+arrives, and answers in a minute or two. Resting and waking are silent:
+your chats only ever get Moe's own replies, never a note that the computer
+stopped or started. Away+ gives it 400 hours a month instead of 150, and
+larger allowances for everything else; for now it rests and wakes the same
+way on both plans. The hours are counted while it is awake. The
+thinking is the same on both, because it runs on your own AI account either
+way. The allowances count for the whole account, however many Macs, and
+reset on the 1st.
+
+### This month's allowances, and packs
+
+Settings › Away shows, under **This month**, how much of each allowance you
+have used: the cloud computer's hours, the cloud voice, the cloud hearing,
+and how many calls to your connected services it may make. When one reaches
+80%, Moe shows a card once that month with a button to buy more.
+
+Two packs are on sale on both plans, each $5 and each for the rest of the
+month you buy it in, from Settings › Away:
+
+- **Add 100 hours**: 100 more hours for your cloud computer.
+- **Add a voice pack**: 150,000 more characters of the cloud voice and 2
+  more hours of cloud hearing.
+
+You see the price on Stripe's page before you pay, and the extra is added
+as soon as the payment goes through. When your cloud computer's hours run
+out, a message from you still wakes it and is answered; scheduled checks
+wait for your Mac until the 1st, and we send you one email to say so. When
+the cloud voice or hearing runs out, Moe uses your Mac's own voice and ears
+until the 1st.
 
 **What a plan does not buy is the thinking.** Moe uses your own Claude or
 ChatGPT plan, or your own key, on your Mac and on your cloud computer. That
@@ -4084,16 +4610,30 @@ cloud computer collects the keys and pulls your conversations; that first
 pull happens inside your next message, so give the first reply time.
 
 **When something goes wrong, there are two kinds.** Something that just
-needs another go, a slow answer, a machine still starting, is retried
-quietly and never mentioned. A freshly made machine takes most of a
-minute before it can be switched on at all, so *Making Moe a home in the
-cloud* keeps asking for it until it answers, for up to two minutes, rather
-than giving up on the first no. Something that is ours stops, reports itself
-to us, and says so: *We've hit a problem on our side and we're on it — it's
-ticket #12. Nothing you've set up is lost, and you don't need to do
-anything*, with the same emails as any report. If the report could not be
-sent, the page says plainly that nobody has been told, and **Tell Moe about
-this…** opens Chat so Moe can report it for you.
+needs another go, a slow answer, a machine still starting or still being
+made, is retried quietly and never mentioned. *Making Moe a home in the
+cloud* keeps asking for the machine for as long as our side says it is on
+its way, up to fifteen minutes, and the clock starts when our side first
+answers, so a slow connection is never counted against it. If Moe could
+not reach us at all, the page says so and offers **Try again**; nothing is
+reported, because nothing is known to be wrong. Something that is ours
+stops, reports itself to us, and says so: *We've hit a problem on our side
+and we're on it — it's ticket #12. Nothing you've set up is lost, and you
+don't need to do anything*, with the same emails as any report. If the
+report could not be sent, the page says plainly that nobody has been told,
+and **Tell Moe about this…** opens Chat so Moe can report it for you.
+
+**A setup that has stopped carries on by itself.** *You don't need to do
+anything* is meant literally: while the page says *We've stopped*, Moe goes
+on checking, every half minute at first and then every few minutes, and the
+moment your cloud computer is there it picks the setup up again and finishes
+it, with nothing for you to press. Coming back to Memoe checks at once.
+**Try again** is still there if you would rather not wait, and **Stop**
+ends it. While it is stopped the list tells one story: the step that
+stopped is marked, the steps before it keep their ticks, and nothing after
+it is ticked or spinning. If you start again after an interruption and your
+cloud computer turns out to be set up already, the page goes straight to
+*How it is* instead of setting it up a second time.
 
 ### Settings › Away, once it is running
 
@@ -4101,9 +4641,21 @@ Once you have a plan the pane is called **Away**. *You're on Away.* Then
 **Your plan**: when it renews or ends, **Manage plan** (Stripe's page:
 change the card, switch plans or cancel; nothing about your card passes
 through Moe), **Upgrade to Away+**, and **Check plan**, which asks us again
-right now and answers beside the button. If the last payment did not go
+right now and answers beside the button. You only ever have one plan: if
+you already have one, switching between Away and Away+ happens in **Manage
+plan**, and Moe will not start a second subscription beside the first — it
+tells you so and nothing is charged. **Upgrade to Away+** opens that same
+Stripe page, already on the step where you change your plan, so you choose
+Away+ and confirm. If Stripe opens the ordinary billing page instead, choose
+Away+ under your plan there; and if the page shows no way to change plan,
+tell Moe and we will switch it for you. If the last payment did not go
 through, a banner says so with **Update card**; your plan stays on while
 Stripe retries.
+
+Under it, **This month** has one line for each allowance — *Cloud
+computer*, *Cloud voice*, *Cloud hearing*, *Connected services* — with what
+is used and when it resets, and the two packs, **Add 100 hours · $5** and
+**Add a voice pack · $5**, each of which opens Stripe's page.
 
 The first time Moe sees that you have a plan, a welcome card says what the
 plan is for and offers the things worth doing first, each with a button
@@ -4142,8 +4694,8 @@ account there, and your cloud computer follows; the page says *It thinks
 with whatever your Mac does.* If you pick something different here with
 **Change…**, your cloud computer keeps that, the page says *You gave your
 cloud computer a brain of its own*, and **Use the same as my Mac** puts it
-back to following. It thinks with the same Claude your Mac does — Sonnet on
-a new Mac, which your machine uses as Sonnet 5.
+back to following. It uses the same model your Mac does, whichever
+provider that is.
 Removing it here never touches your Mac's, and a brain you removed is not
 put back when you change your Mac's. **Change…** and **Remove…** are
 beside it; Remove takes the credential off your machine, which then cannot
@@ -4209,13 +4761,22 @@ always here, reminded or not.
 **Sign out on this Mac…** stops this Mac taking part while your plan and
 your other devices carry on; cancelling is under *Manage plan*.
 
+**If one of your devices is no longer part of your account** — your cloud
+computer was taken down or rebuilt, or another Mac was removed — this Mac
+notices the next time it syncs, stops sending to that device, and carries on
+syncing with the rest. Nothing on this Mac is lost. Settings › Privacy says
+so once, under *Keep a copy in the cloud*, with what to do: set Away up
+again in Settings › Away if it was your cloud computer, or add the other
+device again if you still use it.
+
 ### What your cloud computer does
 
 **It sleeps when you are not using it**, and starts back up when a message
 arrives, so the first message after a quiet spell is slower than the rest;
 everything after it is at the usual speed. It has two processors, so while it
 is starting up it can answer you and do its own start-up chores at the same
-time rather than one after the other. It is never put to sleep in the
+time rather than one after the other, and 2 GB of memory, room for Moe and
+its browser together. It is never put to sleep in the
 middle of answering you. It has no address on the internet: nothing out
 there can reach it or wake it, and the only thing that starts it is a
 message that has already been checked as genuinely yours.
@@ -4270,9 +4831,26 @@ your phone appears on this Mac as well, and "I did" said to either one is
 understood by the other. The same goes for Moe's own nudges, the calendar
 heads-up and the watches on connections that reached your cloud computer.
 A one-time reminder whose moment has already passed is not brought back to
-life on the other side, and jobs that need your Mac's files, apps or browser
-stay on the Mac by design, so your cloud computer's own list of scheduled
-things can be shorter than the Mac's.
+life on the other side.
+
+**Every scheduled job is on both sides.** Ask Moe on your phone which jobs
+you have and you get the same list as on the Mac, each with what it said
+the last time it ran — wherever it ran. A job made on either side runs on
+your Mac while the Mac is open and on your cloud computer while it is shut.
+The one exception is a job that can only be done on your Mac, because it
+needs a folder or file that is only there, a script of its own, or your
+Mac's own browser. Moe marks such a job only when it has checked: what the
+job needs is on your Mac, and it is not on your cloud computer. Your cloud
+computer then lists it as *runs on your Mac only*, never runs it, and if it
+comes up, tells you it runs on your Mac whenever the Mac is on and awake.
+
+**Each run happens once.** Before a job runs, the side about to run it
+checks that the other has not already started it, so a reminder your cloud
+computer gave you while your Mac was shut is not given again when you open
+the lid. Your Mac takes over again as soon as it is open; your cloud
+computer covers once it has been shut or offline for about three minutes.
+If your Mac has no internet when a job is due, it runs the job anyway rather
+than miss it — that is the one time a job can run on both sides.
 
 **A message that arrives while everything is off is kept, not lost.** If
 something comes in on Telegram while your Mac is shut and your cloud
@@ -4281,7 +4859,11 @@ hand it over when the machine wakes, oldest first.
 
 **What travels.** Your conversations, both ways: your cloud computer reads
 what you said at the notch and answers from it, and what you say on
-Telegram appears on the Mac in the same thread. Your memory, sealed under a
+Telegram appears on the Mac in the same thread. Either Moe can look up what
+was said on the other — ask at the notch "what did I tell you on Telegram
+yesterday?", or on your phone "what did we decide on the Mac on Tuesday?",
+and it searches both. A chat on Telegram that has been quiet for six hours
+starts a new conversation next time, as the notch does. Your memory, sealed under a
 key only your devices hold, so a fact saved at the notch is known on
 Telegram after the next sync and a fact deleted on one is gone on the
 other. Your AI sign-in. Your Google services and everything else connected
@@ -4293,7 +4875,7 @@ service you connect while your cloud computer is awake works on the next
 message. The list of what is connected travels too, and so do the
 skills you switched off on the Mac: your cloud computer reads the same
 list before it says a service is not connected, and it never re-enables
-a skill you turned off.
+a skill you turned off. Your skills themselves travel too, both ways.
 
 **What stays on your Mac.** Messages, Calendar, Notes, Reminders, Contacts,
 Chrome, calls, the Gmail you added with an app password, and the servers
@@ -4337,6 +4919,38 @@ conversation. Your cloud computer has no shell: it can search and read the
 web, use your connected services and keep its own notes, but it cannot run
 commands on a machine.
 
+### The cloud browser
+
+**Your cloud computer has a browser of its own.** When a job needs a website
+while your Mac is shut — checking an order, reading a page that needs you
+signed in, filling in a search — Moe uses a browser on your cloud computer.
+Your own Chrome on the Mac is never used for this and never copied: your
+cloud computer's browser starts with no sign-ins at all.
+
+**You sign in to a site yourself, once.** Ask Moe on your chat app to sign
+in to a site, and it sends you a one-time link. Open it on your phone and you
+see that browser, live; type your password and answer your own two-step
+check there. The link works only on the phone that opens it first, and only
+for a few minutes. Moe never sees or types your password, and your sign-in
+stays on your cloud computer — it is not sent to your Mac or to us.
+
+**Settings › Away › Cloud browser** is the list of sites that stay signed in.
+It starts empty. A sign-in to a site that is not on the list lasts for that
+one job and is gone the next time the browser starts; Moe says so when you
+sign in, and you can add the site to keep it. Type a site's address and press
+**Add**; **Remove** next to a site signs your cloud computer out of it before
+the browser next starts.
+
+**It stops and asks you.** Before the cloud browser pays for something,
+sends a message, deletes something, shares a password or grants access, Moe
+asks you on your chat app first, exactly as it does for anything else it
+sends. If a site asks whether you are human, Moe does not try to get past it:
+it tells you on your chat app and leaves it to you.
+
+**It stays small.** The browser keeps at most a few tabs open, closes itself
+after a couple of quiet minutes, and is the first thing to go if your cloud
+computer is short of memory, so Moe itself keeps answering.
+
 ### Keep a copy in the cloud
 
 Agreeing to what Away does is something your account did, so once you have
@@ -4365,7 +4979,7 @@ connected stay exactly where they are.
 
 ### Emails about your account
 
-There are twelve, and they are the only ones we send that you did not ask
+There are thirteen, and they are the only ones we send that you did not ask
 for. Each goes to the address you signed in with, each is a short message
 rather than a receipt, and every one of them can be replied to; a reply
 reaches a person.
@@ -4375,6 +4989,9 @@ reaches a person.
 - **You're now on Away+** (or Away), when you move between the two plans.
 - **We couldn't take this month's payment**, if a card is declined. Sent
   once, not on every attempt.
+- **Your cloud computer has used this month's hours**, once a month at
+  most, when it does: it still answers when you write, scheduled checks
+  wait for your Mac until the 1st, and it says how to add hours.
 - **Your Away plan ends on …**, when you cancel.
 - **Your Away plan is staying**, if you change your mind before then.
 - **Your Memoe plan has ended**, on the day it does.
@@ -4412,8 +5029,15 @@ which version of Memoe is asking; and at most twice, ever, it sends our
 server a single word to count a person coming back, once if a third spoken
 command gets a real answer in your first week and once the first time one
 does on or after day 7. That word is all it carries: no account, no device
-or Mac identifier, and never what was said. A Memoe you build yourself from
-the open-source code sends neither count and does not check for updates. The
+or Mac identifier, and never what was said. Three more one-time counts work
+the same way, each sent once per Mac with the app's version and nothing
+else: the first time a newly installed Memoe is opened, when you finish the
+welcome, and the first time Moe answers something you said or typed. A
+fourth is off unless you turn it on: with **Tell us when Memoe crashes** on,
+a Memoe that did not quit properly sends one count, with its version, the
+next time it opens — no crash report and no logs. A Memoe you build yourself
+from the open-source code sends none of these counts and does not check for
+updates. The
 speech recognition, the voice, the transcription and the memory all run on
 your Mac. The full policy is at
 [memoe.app/privacy](https://memoe.app/privacy), and it lists every service
@@ -4432,6 +5056,10 @@ One page, in this order:
 - **Report without saying who I am** — off. *We can't reply or tell you when
   it's fixed.* On, no account, device, email or plan is attached to a
   report, and it isn't deleted with your account.
+- **Tell us when Memoe crashes** — off. *If Memoe didn't quit properly last
+  time, it sends one anonymous count with the app version — no crash
+  report, no logs, nothing about you.* A force-quit or a Mac that lost
+  power counts too: Moe only knows that it was not quit in the ordinary way.
 - **Keep a copy in the cloud** — only on a paid plan. On, your cloud Moe
   keeps up with what Moe learns on this Mac. Turning it off asks first,
   *Stop keeping a copy in the cloud?*, and says what it means: your cloud
@@ -4444,7 +5072,7 @@ One page, in this order:
   is true right now.
 - **Documents** — the Terms of Service and the Privacy Policy, each with
   **Open** and the version you accepted and when, *You accepted version
-  2026-10-12.1 on …*, or *Not accepted yet. You're asked when you sign in or
+  2026-11-12.1 on …*, or *Not accepted yet. You're asked when you sign in or
   upgrade.*
 - **Delete my account** — only while this Mac is signed in.
 - **Erase Memoe from this Mac**.
@@ -4455,7 +5083,7 @@ You agree in three places, and each is recorded with the documents'
 versions and the time: signing in with Google (the line under every sign-in
 button), **Agree and continue** on *Before you start Away*, and turning on
 problem reports. Turning problem reports off is recorded too. Each document
-shows its version at the top; both currently carry **2026-10-12.1**. A small
+shows its version at the top; both currently carry **2026-11-12.1**. A small
 correction changes only the date; a change that matters gets a new version,
 and you are asked again: on a paid plan, *Our Terms and Privacy Policy have
 changed* appears the next time Moe opens, in a small window of its own;
@@ -4467,26 +5095,50 @@ nothing.
 
 Moe can work your Mac's screen for you, so the buttons that say yes on your
 behalf answer only to you: **Agree** and **Agree and continue**, the
-switches in Settings › Privacy, and **Delete my account** and **Erase this
-Mac**. A click or a key press you make works as normal. If anything else
+switches in Settings › Privacy, **Confirm it's you** under the problem
+reports switch, the buttons that sign you in to your Memoe account with
+Google (signing in is agreeing, as the line under each one says), and
+**Delete my account** and **Erase this Mac**. A click or a key press you make works as normal. If anything else
 presses one, Moe itself, another app, a script, nothing happens, and your
 Mac asks you to confirm it's you with Touch ID or your password. If you
 did not mean to, cancel, and the control says *Please click this yourself.*
+
+One press is enough for everything that follows from it. When you press
+**Agree**, Moe records it, and anything that agreeing needs (setting up this
+Mac's key, see below) happens on the strength of that press, without asking
+you to confirm it's you again. And when you were asked to agree because you
+pressed **Turn it back on** in Settings › Away, or the *Keep a copy in the
+cloud* switch, agreeing finishes that for you: the copy comes back on by
+itself and you are not sent back to press the button a second time. So with
+a mouse or trackpad the whole thing is two clicks and no Touch ID. Signing
+in is the same: your click opens Google straight away, and if something
+else presses the button no browser opens until you confirm it's you. If you
+press these with VoiceOver, Voice Control or Switch Control, your Mac asks
+you to confirm it's you once per press, because that kind of press looks the
+same to Moe as one it could make itself.
 
 Every yes is also signed by a key that only the Memoe app on this Mac can
 use. It is set up when you sign in with Google, and our server accepts an
 agreement only when it carries that signature, so nothing else on your
 Mac, even something that could read Moe's files, can agree for you. If the
 key has to be set up again (Moe was reinstalled, or the key was removed),
-Moe asks you to confirm it's you and sign in with Google once more, and we
-email the address you signed in with: *A new key for agreeing was set up
+Moe asks you to sign in with Google once more when you next press
+**Agree** (and to confirm it's you first, if that press wasn't a click of
+your own), and we email the address you signed in with: *A new key for agreeing was set up
 for your Memoe account*, naming the Mac and the time. If that wasn't you,
 reply to that email.
 
-If Memoe was updated and the new version could not use the old key, the
-request says so: *Memoe was updated and needs you to confirm it's you once
+If Memoe was updated and the new version could not use the old key, and
+your Mac asks you to confirm it's you, the request says so: *Memoe was updated and needs you to confirm it's you once
 more to keep agreeing on this Mac*. Nothing was lost; it is the same Google
 sign-in, once.
+
+If the key stops working on this Mac, Moe replaces it by itself the next
+time you press **Agree**: it asks you to sign in with Google once more,
+then records your agreement in the same press. If your
+Mac still won't let it, Moe says so: *Memoe couldn't record that you
+agreed, because this Mac wouldn't let it. Nothing was recorded. Restart
+your Mac and try again*.
 
 ### Delete my account
 
@@ -4576,9 +5228,13 @@ reports** choice in Settings › Privacy. Any way of saying it works —
 "report this", "file a bug", "send feedback", "tell support" — and Moe
 answers with the ticket number; it never tells you there is no way to
 report a problem, and never just keeps it in its notes. If you turned that on before you
-signed in to the account you use now, Moe tells your account for you; if it
-needs you to sign in again to do that, Settings › Privacy says so with a
-**Confirm it's you** button.
+signed in to the account you use now, Moe tells your account for you, as
+long as it can show the yes was yours: when you turn the switch on, Moe
+keeps a signed note on this Mac that you were the one who pressed it, and
+only a yes with that note is ever passed on without you. If there is no such
+note (you turned it on in an older Memoe, or something else changed the
+setting), or Moe needs you to sign in again, nothing is passed on and
+Settings › Privacy says so with a **Confirm it's you** button: one click.
 
 ### What goes with a report
 
@@ -4676,8 +5332,11 @@ that came inside the new Memoe instead, keeping everything of yours.
 Which Memoe this is, what it is built on, and the way out. At the top,
 **Memoe 0.3.x** with the **Beta** chip beside it, and one line on updates:
 *Keeps itself up to date: a new version is downloaded quietly, and Moe asks
-before restarting to install it.* Under that, what beta means, and that telling Moe
-is what fixes a bug. Nothing technical is on it: no addresses, no keys, no
+before restarting to install it.* A copy built from the source between two
+releases has the last release's version number, so it adds one more line,
+*Not the published release: built from commit …*, and a problem report
+from it says *unreleased build* beside the version. Under that, what beta
+means, and that telling Moe is what fixes a bug. Nothing technical is on it: no addresses, no keys, no
 device ids.
 
 **Built on open models and open source** credits everything that runs on
@@ -4754,6 +5413,547 @@ conversation lives in the page until you close the tab. The privacy page
 says exactly what leaves your browser.
 
 ## Change log
+- **unreleased (2026-11-14)** — **Moe knows five more settings**: the
+  ten-minute look at what's connected (it can turn that off for you; on asks
+  first), the daily read-back and keeping what it learns as memory, which
+  browser profile Moe's browser signs in as, and the meeting capture area
+  (yours to change; Moe opens the row).
+- **unreleased (2026-11-14)** — **Moe changes its own settings.** Say what
+  bothers you and Moe finds the setting, offers to change it, or opens
+  Settings on the row for the ones that are yours to flip (microphone,
+  screen, money, the AI, language, sending). "Connect my Notion" gets a
+  sign-in link.
+- **unreleased (2026-11-14)** — **Docs brought up to date.** Plan limits
+  for connected services now read Away 100 / 200 and Away+ 200 / 500, and
+  voice notes 12 hours on Away+; Away+ is described as 400 hours and larger
+  allowances, without promising a machine that never rests; the cloud
+  computer's 2 GB and the monthly hours email are listed; the browser on
+  Away keeps a sign-in only for sites on the Cloud browser list; Telegram's
+  setup sheet has the Approve button; group chats, LINE and Email Moe in
+  Chat; Moe's quiet about its own restarts in your chats; the hover switch
+  and the pickers in front of the popped-out chat; and vendor model names
+  and settings paths taken out of the pages.
+- **unreleased (2026-11-14)** — New switch, Voice › More › **Hovering the
+  notch opens it** (on by default): off, a hover opens nothing and only a
+  click does.
+- **unreleased (2026-11-14)** — With the chat popped out, hovering the notch
+  brings the chat window forward; before, it did nothing and the notch looked
+  broken.
+- **unreleased (2026-11-14)** — **+** in the popped-out chat opens the file
+  and photo pickers in front of the chat, on the desktop you are on, full
+  screen included; before, they could open hidden behind it.
+- **unreleased (2026-11-13)** — Moe's engine moves to Hermes v0.23.1. The
+  browser Moe drives is the same Chrome for Testing with the same sign-ins,
+  now driven directly instead of through a separate helper; nothing to set
+  up again.
+- **unreleased (2026-11-13)** — A group chat Moe is in through Telegram,
+  Slack, Discord, LINE or WhatsApp is no longer treated as you talking to
+  Moe privately, so its messages stay out of your history; a LINE group
+  message no longer lands in the sender's own chat.
+- **unreleased (2026-11-13)** — LINE and email to Moe's own address are kept
+  in your history on both your Mac and Away, like Telegram. Away also keeps
+  the switch that stops "I'm back" messages in your chats after a restart.
+- **unreleased (2026-11-13)** — The body handed a chat message now holds
+  the presence lease at once, so the Mac and Away never both act as the
+  awake one in the minutes after a lid closes (edge only).
+- **unreleased (2026-11-13)** — **Chats on your phone are in your history.**
+  A message the Mac answered on Telegram, WhatsApp or another chat app now
+  becomes a conversation on the Chat page and travels to Away like the rest;
+  before, only the cloud computer's own chat answers were kept.
+- **unreleased (2026-11-13)** — **Only Moe's words reach your chats.** Away
+  sent "Hermes is shutting down…" to Telegram every time it went to rest,
+  and asked about pruning history over a disk that was nearly empty. Both
+  are gone; the few notices left say what happened in plain words. Moe's
+  own replies keep file paths, command names and error codes out unless you
+  ask for them. A Telegram chat left pointing at a retired Away computer now
+  follows you to the new one instead of being treated as a stranger.
+- **unreleased (2026-11-13)** — **Telegram setup finishes.** After the bot
+  was made, a hello from your phone waited behind a spinning *Finish in
+  Telegram…* until the sheet timed out, with no way to let it in but a
+  command. It now appears in the sheet with an **Approve** button, as the
+  setup always promised, and the waiting line names no command.
+- **unreleased (2026-11-13)** — **The microphone survives a call.** When
+  a browser call took the microphone, Moe could lose it for good (macOS
+  27.2: the audio engine's input stuck at 2 ch / 44.1 kHz over a 1 ch /
+  48 kHz microphone) until it was quit. It now starts on a new audio engine
+  instead of retrying the broken one. A microphone that is not working
+  shows as *Microphone not working* in the window's footer and one status
+  line, no longer as error bubbles in the conversation.
+- **unreleased (2026-11-13)** — **Edit a message you sent.** The pencil
+  under your message, or Edit message on right-click, puts it back in the
+  box; sending cuts the conversation there on every device and Moe answers
+  the new version with only what came before.
+- **unreleased (2026-11-13)** — **Don't remember this chat.** The eye
+  beside a conversation's name stops Moe saving anything from it to memory,
+  on this Mac and on the cloud computer: no learning from it, no memory
+  writes, no look back over it afterwards. Per conversation; a new one is
+  remembered.
+- **unreleased (2026-11-13)** — **Tags.** After three exchanges a
+  conversation gets up to three tags from one call to the cheapest model of
+  your provider; a row of tags under Search filters the rail. Never for a
+  conversation marked Don't remember.
+- **unreleased (2026-11-13)** — **Scheduled browser jobs run on Moe Away
+  too.** A job that uses a website now runs in the cloud computer's own
+  browser while the Mac is shut. Only a job that needs your Mac's own,
+  signed-in browser stays on the Mac.
+- **unreleased (2026-11-13)** — **Skills sync with Moe Away.** Every skill on
+  the Mac is on the cloud computer too, and one written or improved there
+  comes back; the newer change wins, and a deletion travels with the copy
+  kept aside. Before, only the list of switched-off skills travelled.
+- **unreleased (2026-11-13)** — **A signed-in browser on your cloud
+  computer.** Jobs that need a website run in a browser on the cloud computer
+  while the Mac is shut. You sign in yourself through a one-time link; only
+  the sites listed in Settings › Away › Cloud browser stay signed in. It asks
+  on your chat app before paying, sending or deleting, never gets past an
+  "are you human?" check itself, and gives way first when memory is short.
+- **unreleased (2026-11-13)** — **A model per chat.** The bar at the top of
+  Chat has a menu of the models your own AI service offers; the choice holds
+  for that chat only.
+- **unreleased (2026-11-13)** — **Send · Edit · Copy, Yes and Retry.**
+  Buttons under the newest answer: for a draft, an offer, or an answer
+  that failed, in Chat and on the panel. Sending still asks you first.
+- **unreleased (2026-11-13)** — **Thinking folds into the steps.** When the
+  provider streams the model's thinking, it is kept with the answer under
+  the steps, folded, in Chat and on the panel; it is never spoken.
+- **unreleased (2026-11-13)** — **⌘J hands the conversation to the window.**
+  From the panel or the popped-out chat, ⌘J opens Chat on the same
+  conversation with your half-typed words and files in its box. The round
+  buttons at the top of the panel are easier to hit.
+- **unreleased (2026-11-13)** — **Search, pin, rename and archive
+  conversations.** A search field tops the Chat rail; right-click a
+  conversation to pin it, rename it in place, archive it or delete it.
+- **unreleased (2026-11-13)** — **⌘V attaches, and Chat reads well to
+  VoiceOver.** A copied picture or file pasted into the box is added to the
+  message on every surface; each message is one VoiceOver stop with Copy and
+  Read aloud as actions, and a finished answer is announced. Section labels
+  in Chat are larger, without letter-spacing, and the small buttons by
+  Moe's name are easier to hit.
+- **unreleased (2026-11-13)** — **Hebrew and Arabic read right to left.**
+  Each paragraph of a message, yours or Moe's, takes its own direction in
+  Chat, on the panel and in the popped-out chat, settled from its first
+  words so it never flips mid-answer; code stays left to right.
+- **unreleased (2026-11-13)** — **Each Moe searches the other's chats.**
+  What you said on Telegram can be found from the Mac, and what you said at
+  the notch can be found from your phone. A Telegram chat quiet for six
+  hours starts a new conversation.
+- **unreleased (2026-11-13)** — **Each scheduled run happens once.** Both
+  sides check before a job runs, so one your cloud computer already did is
+  not done again by the Mac when it opens; a Mac with no internet runs it
+  anyway rather than miss it.
+- **unreleased (2026-11-13)** — **Every scheduled job is on both sides.**
+  Your cloud computer lists every job you have on the Mac, with what each
+  last said wherever it ran. A job is kept to the Mac only when what it
+  needs is checked to be on the Mac and not on the cloud computer; the
+  cloud lists it as running on your Mac only and never runs it.
+- **unreleased (2026-11-13)** — **New plan limits, packs and warnings.**
+  Away: 150 cloud computer hours, 300,000 characters and 6 hours of cloud
+  voice and hearing, 100/200 service calls an hour/day. Away+: 400 hours and
+  always ready, 1,000,000 characters and 12 hours, 200/500 calls. Two $5
+  packs on both plans (100 hours; 150,000 characters + 2 hours). Settings ›
+  Away shows **This month**; one card at 80% with a buy button; one email
+  when the hours run out, after which scheduled work waits for the Mac. The
+  cloud computer now uses an Away+ person's own service-call allowance. The
+  site says "answers in a minute or two" instead of "the moment".
+- **unreleased (2026-11-13)** — **Answers are laid out.** Lists, tables,
+  paragraphs, and code with its language and **Copy**, in Chat, on the
+  panel under the notch and in the popped-out chat, drawn by one renderer.
+- **unreleased (2026-11-13)** — **Stop is the send button.** On the panel
+  under the notch and in the popped-out chat, the send arrow becomes **■**
+  while Moe works, the **⋯** sits beside it instead of on a row of its own,
+  and a finished answer folds what Moe did to one line, *3 steps · 48 s ·
+  1 source*, that opens into the steps and the pages read. A held message
+  has an **×**.
+- **unreleased (2026-11-13)** — **Chat shows Moe working.** The Chat page
+  says what Moe is doing with a clock and **Stop**, the send arrow becomes
+  **■** while it works, a message typed meanwhile waits in view with **Send
+  now**, **Edit** and **×**, the steps chip says how long the job took, and
+  times follow the Mac's 12- or 24-hour setting.
+- **unreleased (2026-11-13)** — **The chat pops out of the notch.** A
+  pop-out button in the panel's header, **Pop Out Chat** in the menus, or
+  **⌃⌥P** moves the conversation into a window you can drag anywhere,
+  resize, keep on top of every app, desktop and full-screen app, and put
+  back in the notch. It is the same conversation and the same box to type
+  in; while it is out, the notch opens no panel of its own. See *Popping
+  the chat out of the notch*.
+- **unreleased (2026-11-12)** — **Moe asks before browsing signed out.**
+  When Moe can't open its browser with your logins, it tells you why and
+  asks whether to continue signed out. A card on your Mac asks *Continue
+  signed out?* before anything runs, and one yes covers that conversation.
+  What Moe does signed out it says was not done as you. A scheduled job
+  that meets this while you are away reports what is waiting and stops. See
+  *It is signed in as you*.
+- **unreleased (2026-11-12)** — **Moe starts answering sooner when you
+  speak.** A question asked out loud now opens at the lowest thinking level
+  your account has; on a Claude plan that covers the opening only, and the
+  level you chose is back once Moe has said its first words or started
+  looking something up. Typed questions are unchanged. See *Settings ›
+  Brain*, *How hard it thinks*.
+- **unreleased (2026-11-12)** — **A failed connection says so plainly when
+  the problem is a secure connection.** If Moe could not make a secure
+  connection while you connected a service or pressed **Add another**, the
+  sheet showed a raw line about a certificate, or an unrelated line from
+  earlier, with advice to copy the key again. It now says *Moe couldn't make
+  a secure connection to finish setting this up* and suggests reopening
+  Memoe, checking the Mac's date and time, and pausing any VPN or web filter.
+- **unreleased (2026-11-12)** — **Moe in your Chrome installs from the Chrome
+  Web Store.** **Add to Chrome** now opens the extension's store page — one
+  click, kept up to date by Chrome — instead of Developer mode and Load
+  unpacked. Memoe recognises the store copy, and on its next launch mends the
+  link an earlier version gave Chrome, which only let the old copy in. The
+  row now says which way it is stuck (not installed; installed, not
+  connected; in another Chrome profile; installed, can't reach Memoe) with
+  **Repair** where Memoe can fix it, the extension's own button shows a red
+  **!** with the reason when it cannot reach Memoe, and Moe can say why too.
+- **unreleased (2026-11-12)** — **Settings › Away no longer sits on
+  "Checking…" for minutes.** On a Mac whose history had an old hiccup in it,
+  Moe was re-sending its entire history to the cloud on every sync — over a
+  hundred megabytes every five minutes — and the Away screen waited behind
+  each one. Moe now sends only what the cloud does not have, so a sync with
+  nothing new takes about a second again.
+- **unreleased (2026-11-12)** — **Getting ready for a smaller download;
+  nothing changes for you yet.** The next version of Memoe is the same size
+  to download and does everything the same way, online or off. The one
+  thing it does differently is out of sight: the first time it opens, it
+  keeps its own copy of two optional models beside the others on your Mac
+  (in `~/Library/Application Support/FluidAudio/Models`) instead of reading
+  them from inside the app. They are the model that corrects your own names
+  and terms, and the one that tells meeting speakers apart. It normally
+  takes no extra disk space, and never more than about 115 MB. It is there
+  so that a later, smaller Memoe can leave those two out of the download
+  without your Mac having to fetch them again. If the copy cannot be made
+  (a full disk, say), Memoe carries on using the ones inside the app.
+- **unreleased (2026-11-12)** — **Connections fits its window, and one
+  account can be removed.** With several accounts on one service, the
+  Connections detail pane was taller than the window and nothing scrolled:
+  the top of the page and the buttons at the bottom were cut off, and so
+  was the end of the list beside it. The page now scrolls inside the pane,
+  the buttons stay at its foot at every window size, and they stack in a
+  narrow window. The Chrome row and the row for what Moe thinks with are
+  built the same way and are fixed with it. Each account's row has
+  **Remove** beside **Rename**: Moe asks first, naming the account, and
+  removes only that one. After a removal that fails, the sheet no longer
+  gives advice written for a failed sign-in.
+- **unreleased (2026-11-12)** — **Add another, and Disconnect, work again on
+  a Mac with its own Python.** If you had installed Python from python.org,
+  pressing **Add another** on Gmail (or connecting or disconnecting any
+  service) could fail with *could not start the sign-in* and a line about a
+  certificate. Moe was starting its connection helpers with whichever Python
+  it found first on the Mac, and that one could not check a website's
+  certificate. Moe now uses the Python that ships inside it for all of them,
+  and for the helpers its thinking part starts.
+- **unreleased (2026-11-12)** — **Setting up Away no longer gets stuck
+  saying two things at once, and a stopped setup finishes by itself.** The
+  setup page could say *We've stopped* over a spinner, with later steps
+  ticked beneath the one that failed, and then stay that way: it told you
+  there was nothing to do while waiting for you to press **Try again**. Now
+  a stopped setup keeps checking and carries on the moment your cloud
+  computer is there; the list never shows a spinner or a later tick once it
+  has stopped; and starting again notices a cloud computer that is already
+  set up. The wait itself is fairer too: it used to give up two minutes
+  after you pressed the button, however slowly our side was answering, and
+  report a missing machine — with a "We're on it" email and a "Fixed" one
+  two minutes later. It now waits up to fifteen minutes while our side says
+  the machine is on its way, counts from our first answer rather than your
+  press, and does not report anything when it simply could not reach us.
+- **unreleased (2026-11-12)** — **A request for your OK is kept out of your
+  email again.** Moe never emails its own working notes or a request for
+  your OK: a request waits for an answer email can't give, and the Email row
+  says Moe needed one. After Moe's engine reworded those notes, the email
+  side no longer recognised the new wording, so a request for your OK — with
+  the command, or the message Moe was about to send, written out in it —
+  could arrive as if it were Moe's answer, and so could a note that Moe was
+  stuck. Both are recognised again in either wording. When a reply fails, the
+  email still says so in one plain sentence instead of repeating the engine's
+  own instructions.
+- **unreleased (2026-11-12)** — **How long a reply can go without a service
+  you just connected, restated.** When you connect a service while your cloud
+  computer is awake, it reconnects its services in place, and a message that
+  arrives in those moments can be answered without them. This page once put
+  that at up to about 259 seconds. With the Hermes Moe runs on now the longest
+  it can last is about 629 seconds, usually a few: Hermes waits up to 310
+  seconds for another process to finish connecting (it was 120) and allows up
+  to 300 seconds to connect a long list of services (it was 120). The same
+  entry used to warn that a conversation could lose what was said earlier in
+  it when this went wrong; that was fixed in Hermes on 2026-09-15 and the
+  warning is gone.
+- **unreleased (2026-11-12)** — **A long conversation stays quick for
+  longer.** Moe used to re-send the whole of "what is going on right now"
+  (your calendar, tasks and recent messages) every ten minutes of a
+  conversation, and all of it stayed in the conversation to be re-read with
+  every question after. It now sends only the lines that are new or gone.
+  And when the part of Moe that thinks has to restart under a question,
+  which is a wait of about six seconds, Moe's log now says why.
+- **unreleased (2026-11-12)** — **Two more yeses that answer only to you.**
+  Signing in to your Memoe account with Google is agreeing to the Terms and
+  Privacy Policy, so the buttons that do it are now among the controls only
+  a person can press: your own click opens Google at once, and a press Moe
+  or another app makes opens nothing until you confirm it's you. And a
+  problem-reports yes that Moe passes on to a new account by itself must now
+  carry a signed note that you pressed the switch; a setting that merely
+  says "on" is no longer taken as your word, and Settings › Privacy asks you
+  to **Confirm it's you** instead. See *Only you can agree*.
+- **unreleased (2026-11-12)** — **The website counts a Download tap that
+  could not be a download.** On a phone, a tablet or a PC the Download
+  button shows *Memoe runs on a Mac* instead. That tap is now counted as
+  its own line, saying only which button it was, the same as a Download
+  click; nothing about your device is added to it.
+- **unreleased (2026-11-12)** — **Upgrade to Away+ opens on the right
+  step.** The button now opens Stripe's page already on *change your plan*,
+  instead of the billing page where you had to find it. If Stripe will not
+  open that step, you get the billing page as before.
+- **unreleased (2026-11-12)** — **Three things that had slipped.** A
+  reminder made before any brain is chosen is refused again, with nothing
+  left on the clock, rather than quietly kept. Away's check for a way to
+  reach Moe says it couldn't check when the list of chat apps could not be
+  read, instead of saying nothing is connected. And on a Mac where Moe's
+  ranking of services is missing, Connections still leads each service with
+  the sign-in that also works on your cloud computer.
+- **unreleased (2026-11-12)** — **The Privacy Policy and the Terms are now
+  version 2026-11-12.1, and you are asked to agree once.** The policy now
+  says that Moe can use where your Mac is when a question needs it and you
+  have allowed it, names the first-open, welcome-finished and first-answer
+  counts and the crash count you can turn on, and says that the website
+  counts which Download button was pressed, a Download pressed on something
+  that is not a Mac, and what kind of program asked for the download. That
+  is a change that matters, so if you agreed to an earlier version: on a
+  paid plan, *Our Terms and Privacy Policy have changed* appears the next
+  time Moe opens; on the free plan, you agree the next time you sign in,
+  start Away or turn on problem reports. Nothing stops while it waits. See
+  *Terms and Privacy Policy: when you agree, and to what*.
+- **unreleased (2026-11-12)** — **Upgrade to Away+ goes somewhere.** On
+  Away, the button used to start a second purchase, which Moe refuses, so
+  it could only fail. It now opens your billing page at Stripe, where you
+  switch plans. If the page shows no way to switch, tell Moe and we will do
+  it for you.
+- **2026-11-12** — **The premium voice allowance is counted by us, not
+  only reported by your Mac.** Each connection to the premium voice now
+  counts as at least 100 characters, taken out of what Moe goes on to say,
+  so normal use comes to the same number as before. A Mac that asks for
+  connections far faster than Moe ever does is asked to wait a few minutes
+  and uses the voice on your Mac meanwhile. Nothing changes for premium
+  hearing.
+- **2026-11-12** — **A plan that ended stays ended, and one you pay for
+  is not lost.** Our payment provider's notices can reach us late or out of
+  order. A late one could put a cancelled plan back, or end a plan you had
+  just started again. Notices are now put in the order they happened, and
+  once a day we can check every plan against the payment provider's own
+  list, so what you have in Memoe is what you are paying for.
+- **unreleased (2026-11-12)** — **Moe knows which town you are in.** "What's
+  the weather" used to be answered for wherever your internet connection
+  appeared to be, which could be a town or two away. Now Moe uses your Mac's
+  own location. macOS asks your permission the first time a question needs
+  it; say no and Moe asks you, or says it is going by your connection. See
+  *Knowing where you are*.
+- **unreleased (2026-11-12)** — **A device that left your account no longer
+  stops syncing.** If your cloud computer was taken down or rebuilt, this
+  Mac kept trying to send to the old one, was refused every time, and
+  showed "couldn't reach your other devices… it will try again" for as long
+  as it ran; setting Away up again was refused for the same reason. Now the
+  Mac notices, stops sending to the device that is gone, carries on with
+  the rest, and tells you once in Settings › Privacy what to do.
+- **unreleased (2026-11-12)** — **Confirm it's you answers only to you.**
+  The button under *Let Moe send problem reports* is now one of the
+  controls only a person can press, like the switch above it. And your own
+  click on that button, on the switch in the welcome, or on the switch in
+  Settings is enough when this Mac's key for agreeing is new: you are no
+  longer asked for Touch ID as well.
+- **unreleased (2026-11-12)** — **Four small counts after the download.**
+  Until now we could see how many people clicked Download and nothing after
+  it. A newly installed Memoe now sends one anonymous count the first time
+  it is opened, one when the welcome is finished, and one the first time
+  Moe answers you — each once per Mac, with the app's version and nothing
+  else. A Mac that was already set up sends none of them. A new switch in
+  Settings › Privacy, **Tell us when Memoe crashes**, is off; turned on, a
+  Memoe that did not quit properly sends one count the next time it opens,
+  with no crash report and no logs. The website also counts each request
+  for the download by what kind of program asked (a Mac browser, another
+  browser, a script), without keeping an address. *Privacy* and the privacy
+  policy list all of it.
+- **unreleased (2026-11-12)** — **Every inbox card has something to tap.**
+  Moe used to make a card out of anything it had to say, including notes
+  about itself and news with nothing to do about it. Now a card needs a
+  one-tap action, or to be something you asked for, or to be urgent.
+  Everything else stays quiet and is kept under *Done this week* on the
+  Inbox page, marked *Kept quiet*.
+- **unreleased (2026-11-12)** — **Write the notes, later.** A meeting whose
+  notes failed, or that was stopped early, now has a **Write the notes**
+  button on the Meetings page, which writes them from the saved transcript,
+  with **Try again** if it does not work.
+- **unreleased (2026-11-12)** — **Quitting waits for your notes to reach
+  Telegram.** "Stop and Write Notes" used to quit the moment the notes were
+  written, which could cut off the copy being sent to your Telegram. Memoe
+  now waits for the send, up to twenty seconds, and a small window says
+  what it is waiting for.
+- **unreleased (2026-11-12)** — **Lighter when idle, and reminders arrive
+  sooner.** Memoe used to look for new reminders every five seconds and for
+  two other things every few seconds, all day. It is now told the moment
+  one arrives, so a reminder shows up within a second and an idle Mac is
+  left alone.
+- **unreleased (2026-11-12)** — **VoiceOver and Reduce Motion in the Memoe
+  window.** Inbox cards, the Meetings page, Memory and Settings name their
+  icon-only buttons, each inbox card is one stop with its buttons as
+  actions, ↑ and ↓ walk the Inbox list, and things stop sliding when Reduce
+  Motion is on.
+- **unreleased (2026-11-12)** — **Nothing beside the floating camera
+  capsule at rest.** With something unread in the inbox, the island kept a
+  run of black and a white dot to the right of the camera all the time, and
+  a much longer one whenever a microphone was open. It now shows nothing at
+  rest; what is waiting is in the card on hover, and the capsule still
+  widens when something arrives, while you speak, and while Moe thinks or
+  answers. The open follow-up moment after a reply is rest too: the bars
+  come back when you start speaking.
+- **unreleased (2026-11-12)** — **No empty band in the island's card while
+  Moe thinks.** On a MacBook with a floating camera capsule, opening the
+  card before anything had been said showed an empty strip with a lone ⋯ at
+  its right. The ⋯ now sits beside the camera with the other buttons, the
+  card is just that band and the field, and the controls take a row only
+  while you have them out.
+- **unreleased (2026-11-12)** — **The first line of a short conversation is
+  no longer cut off.** In the island's panel the top of the first row was
+  shaved away, and faded as if more were above it, even when the whole
+  conversation fitted. On every Mac.
+- **unreleased (2026-11-12)** — **The island steps round the system's
+  microphone indicator.** On a MacBook with a floating camera capsule, macOS
+  draws its own orange dot and pill beside the camera while a microphone is
+  in use, over everything. Moe's *Thinking* was drawn underneath it, with
+  only the last letter showing. Moe now keeps its ring and its word either
+  side of that pill, and the open card no longer says *Thinking* twice.
+- **unreleased (2026-11-12)** — **The island fits the floating camera capsule.** On a
+  MacBook whose camera is a capsule floating in the menu bar, Moe used to
+  draw a black tab over it, twice as wide and running up to the top of the
+  screen. Now Moe is the capsule itself: it grows sideways when there is
+  something to show and opens into a rounded card below the top edge. Macs
+  with a notch, and Macs with neither, look exactly as before. The island's
+  buttons are named for VoiceOver, and Reduce Motion is honoured.
+- **unreleased (2026-11-12)** — **A thinking part that has stopped answering
+  is noticed and replaced.** It could be running and answer nothing, and
+  every question then ended in *Moe is taking too long to answer* until you
+  quit Memoe. Now a question that gets no answer makes Moe check; two
+  checks unanswered and it is replaced in a few seconds. One that is only
+  slow is left alone.
+- **unreleased (2026-11-12)** — **Each background job says when it last
+  ran.** Settings › Running in the background › More shows *Last ran 2 h
+  ago*, *Has not worked since Tuesday* or *Has not run since Tuesday* on
+  each of Moe's own jobs. A job that had quietly stopped used to show
+  nothing at all. Never an inbox card.
+- **unreleased (2026-11-12)** — **Moe brings back the right memory.** A line
+  that did not fit the page Moe reads every time is found by the rare words
+  in your question, not by *the*, *you* and *what*, and no longer by words
+  from Moe's own instructions.
+- **unreleased (2026-11-12)** — **Looking up a tool no longer uses up your
+  requests.** Only what Moe does with a connected service counts toward the
+  hourly and daily ceiling, so the same ceiling goes two to three times as
+  far. If you do reach it, you are told once, in one line, when it lifts.
+- **unreleased (2026-11-12)** — **Long conversations keep Moe's manners.**
+  The full reminder of how to answer is repeated every twenty messages, so
+  it cannot be lost when a long conversation is condensed.
+- **2026-11-12** — **One plan at a time.** Starting a plan when you already
+  have one used to open a second subscription beside the first. Now Moe
+  says you already have a plan and points you to **Manage plan**, where
+  switching between Away and Away+ is done; nothing is charged.
+- **2026-11-12** — **The coming-back counts are sent reliably.** The two
+  one-word counts described under *Privacy* were marked as sent before they
+  had arrived, so a Mac that was offline at that moment never sent its own.
+  Each is now marked only once our server has it. What they contain is
+  unchanged: the name of the count and nothing else.
+- **2026-11-12** — **Moe cannot rewrite the check that asks
+  before it sends.** The check refused any attempt to change its own files,
+  but only when they were named by Memoe's old folder name. Named by the
+  folder's real place on your Mac, a few of them could have been rewritten
+  with no question asked. Now it goes by which file it is, not what it was
+  called. Nothing you do day to day asks more often because of it.
+- **unreleased (2026-11-12)** — **A key or a model on this Mac no longer
+  ends the welcome, and Memoe offers to move itself to Applications.** On
+  *Give me something to think with*, **Use a key** and **Set this up** used
+  to close the welcome for good; now Settings › Brain opens beside it, the
+  welcome waits, checks the brain answers, and carries on at *Say hello*.
+  A new line, **No AI plan? Start free**, says what is honestly free: a
+  Google Gemini key up to Google's daily allowance, or a model on this Mac.
+  *Say hello* no longer says Accessibility lets Moe "click for you"; it
+  names the helper, CuaDriver, that does and that macOS will ask about.
+  Opened from its disk image, Memoe offers **Move to Applications** and
+  asks before replacing a copy already there. Settings › Permissions no
+  longer offers **Quit and reopen** for Accessibility, which works the
+  moment it is switched on. A language that will not load says so in a
+  plain sentence.
+- **unreleased (2026-11-12)** — **The welcome holds your place, and Say
+  hello only asks for what works.** Closing the welcome part-way no longer
+  ends it for good: it comes back on the screen you left, and **Show Welcome
+  Again** in the Moe menu brings it up any time. Signing in with ChatGPT now
+  shows the same tick and moves on the same way as signing in with Claude. A
+  sign-in download that fails says so and offers **Try again**. *Say hello*
+  leads with the button and ⌃⌥Space until Accessibility is on, waits for the
+  grant instead of asking you to quit and reopen, shows *Getting my ears
+  on…* while Moe warms up, and moves on after the answer has played. Ask a
+  question with no AI connected and Moe says so out loud and opens the place
+  to connect one. Set-up and sign-in failures are a plain sentence and what
+  to do. The About box names the AI you chose.
+- **2026-11-12** — **Agreeing takes two clicks, not four and four Touch
+  IDs.** Turning the cloud copy back on used to ask you to confirm it's you
+  at every step, including for your own clicks, and then left you to press
+  the button again. Your own click is recognised now, one press on **Agree**
+  covers what follows from it, and the copy comes back on by itself. See
+  **Only you can agree**.
+- **2026-11-12** — **Quitting during a meeting asks first.** ⌘Q an hour into
+  a recorded call used to quit at once and leave the meeting without notes.
+  Memoe now asks: stop and write the notes, quit anyway, or cancel.
+- **2026-11-12** — **Long conversations stay quicker.** Every message used
+  to carry the same page of speaking rules to your AI, and the copies piled
+  up. They are sent once per conversation now, with a two-line reminder
+  after. Nothing about how Moe answers is meant to change.
+- **2026-11-12** — **Lighter at rest.** The island no longer checks four
+  times a second whether a conversation is on, and a damaged file in the
+  inbox is read once instead of every five seconds.
+- **2026-11-12** — **Memoe by name where macOS says Memoe.** Messages that
+  send you to System Settings to allow Calendar, Reminders, Contacts or
+  Notes now name the app as it is listed there.
+- **2026-11-12** — **Agree works again when this Mac's key for agreeing
+  has stopped working.** Pressing Agree could fail every time, with a
+  message about not reaching your other devices that was not true. Moe now
+  replaces the key in the same press, after one Google sign-in, and when it
+  cannot it says what happened and what to do.
+- **2026-11-12** — **A build that is not a release says so.** A copy of
+  Memoe built from the source between two releases showed the same version
+  as the published one, so a problem report could not tell them apart.
+  Settings › About now adds *Not the published release: built from commit
+  …* on such a copy, and its reports say *unreleased build*. Nothing
+  changes on a downloaded Memoe.
+- **2026-11-12** — **Settings › Brain speaks plainly when a change fails.**
+  A change that could not be saved used to show a line of technical output
+  from Moe's insides. It now says what happened, that nothing was changed,
+  and what to try; the detail goes to Moe's log.
+- **2026-11-12** — **No more "install developer tools?" from Moe.** On a
+  Mac without Apple's developer tools, opening Memory, Usage, Activity, Chat
+  search and a few other pages could put up a system dialog asking to
+  install them, and then show an empty page: *Nothing about you yet*, over
+  a full memory. Moe now runs all of that with the Python that ships inside
+  it, and a page that could not read says it couldn't look rather than that
+  there is nothing.
+- **2026-11-12** — **A turn that ends with nothing is said, not hidden.**
+  When the thinking part ended a turn without a word, the panel just went
+  quiet, as though Moe had answered. Moe now says *No answer came back. Ask
+  me again.*, spoken when you asked out loud.
+- **2026-11-12** — **Moe comes back when its thinking part does.** If the
+  part of Moe that thinks would not start, Moe said it would keep trying, and
+  it did, but every question after that was still answered *Moe isn't
+  connected* until you quit and reopened the app. Now Moe is back as soon as
+  that part is, the window says so, and asking a question while it is down
+  makes Moe try again at once.
+- **2026-11-08** — **A conversation left alone for an hour starts fresh.**
+  One thread could run for days, and every answer re-read all of it: the
+  first word took 12 seconds by the end of a week. Now an hour untouched
+  puts it away in Chat, and the next question starts a new one.
+- **2026-11-08** — **A new conversation starts faster.** Moe used to spend
+  about a second and a half reading its memory before the first answer of
+  every new conversation, and a little more before every answer after.
+  That is now about half a second, and nothing per answer. What Moe
+  remembers is unchanged.
+- **2026-10-30** — **The way out of the inbox, and room for a long
+  answer.** The inbox has a **‹ Chat** button at its top that is always
+  there; before, the only way back was the tray icon, which was hidden
+  whenever Moe was working. Closing the panel leaves the inbox. Clicked open,
+  the panel is taller than on hover, and a long answer is shown from its
+  start, with a scroll bar.
 - **2026-10-20** — **Homebrew and GitHub Releases.** `brew install --cask
   izzy-gottz/moe/memoe` installs Memoe (the old `moe` cask still works and
   moves across), and every version is on the open-source repository's
@@ -6155,7 +7355,7 @@ says exactly what leaves your browser.
   opens on hover in every state now.
 - **unreleased (2026-09-18)** — **The app wears the site's colours.** Moe's
   windows, Settings and the welcome now use the same paper, ink and slate as
-  moebot.app, in light and dark, and Moe's replies are set in the same sans as
+  memoe.app, in light and dark, and Moe's replies are set in the same sans as
   everything else rather than a serif. The island stays black glass under the
   notch, as before. Nothing moved and no switch changed; it is the same app in
   the same clothes as the page you downloaded it from.
@@ -7796,10 +8996,10 @@ an email at 90. The Agree buttons,
   said nothing or said the wrong thing.** Signing in with Google left you on
   `http://127.0.0.1:<a port>/?code=…` — an address that reads as a mistake at
   the exact moment you have handed over your Google account; the browser now
-  ends on **moebot.app/signed-in**, and a sign-in that did not finish says so
+  ends on **memoe.app/signed-in**, and a sign-in that did not finish says so
   instead of congratulating you. Paying dropped you on the marketing homepage,
   because Stripe's "you paid" and "you cancelled" pages were the same string;
-  paying now lands on **moebot.app/thanks**, which names the plan you bought
+  paying now lands on **memoe.app/thanks**, which names the plan you bought
   and tells you what to do next, and cancelling still leaves you where you
   started. The first time Moe sees a plan, **Settings › Away opens with a
   welcome** rather than a renewal date: three buttons that go to the screen
@@ -7883,7 +9083,7 @@ an email at 90. The Agree buttons,
 
 - **unreleased (2026-09-15)** — *Internal.* The admin's visitor and Download
   click numbers are now everybody **but** us. Marking a browser as ours — the
-  "That's me" button, or opening moebot.app with `#im-staff` on that browser —
+  "That's me" button, or opening memoe.app with `#im-staff` on that browser —
   takes every line it ever sent out of the numbers, past as well as future,
   where the site's own flag used to mark only what came after it; and a
   visitor is now something that says `Mozilla/` first, so a headless runner
@@ -7966,7 +9166,7 @@ an email at 90. The Agree buttons,
   amber pulse, not only by email: Moe reads you the plan and you answer out
   loud. Someone who never signed in with an email is told the same way.
 
-- **unreleased (2026-09-07)** — **The playground on moebot.app is a Mac Moe
+- **unreleased (2026-09-07)** — **The playground on memoe.app is a Mac Moe
   can actually work.** One world behind every window and every answer; real
   tools instead of a "DO:" line, with the confirm sheet before anything
   sends or buys; a pointer that drives Preview's export sheet; a shop with a
@@ -8626,7 +9826,7 @@ an email at 90. The Agree buttons,
   everywhere, and asking for them got you the name of a site to type in.
 - **unreleased (2026-09-03)** — Settings → About shows all three answers to
   "which Moe is this?" — this Mac, and what is published for everyone — and
-  [moebot.app/status](https://moebot.app/status) shows them plus `main` from
+  [memoe.app/status](https://memoe.app/status) shows them plus `main` from
   any browser. A release now records which commit is in it, so "is what
   everyone is running the same as what we have?" has a real answer instead of
   an inference from timestamps. **Publish a release…** cuts one from `main`.

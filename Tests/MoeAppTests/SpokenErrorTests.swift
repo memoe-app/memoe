@@ -28,7 +28,7 @@ struct SpokenErrorTests {
         let source = try String(contentsOf: root.appendingPathComponent("Sources/Moe/Conductor.swift"), encoding: .utf8)
         let arm = try #require(source.components(separatedBy: "case .error(let message):").dropFirst().first?
             .components(separatedBy: "case .failedToLaunch").first)
-        let said = try #require(arm.range(of: "self.voice.speak(SpokenError.line(for: message))"))
+        let said = try #require(arm.range(of: "self.voice.speak(SpokenError.line(for: message, needsSignIn: self.needsSignIn))"))
         let finished = try #require(arm.range(of: "self.voice.replyFinished()"))
         #expect(said.lowerBound < finished.lowerBound)
         #expect(arm.contains("if self.replySpeaks"))

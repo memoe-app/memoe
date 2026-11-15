@@ -166,6 +166,150 @@ public struct ConversationStore {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: titlesURL.path)
     }
 
+    // MARK: Pinned and archived
+
+    /// How the person has filed a thread in the Chat list. Kept beside the
+    /// threads in `marks.idx`, like the titles, so a re-projection of a
+    /// thread from the ledger cannot lose it.
+    public struct Marks: Codable, Equatable, Sendable {
+        public var pinned: Bool
+        public var archived: Bool
+        /// The model this chat was set to, and the provider it was chosen
+        /// from: a choice made on one provider means nothing on another.
+        public var model: String?
+        public var provider: String?
+        /// "Don't remember this chat": nothing said in it is learned or
+        /// written to memory, and it is never tagged.
+        public var forget: Bool
+        /// Short topic tags for the list's filter, named once by the cheap
+        /// model (`ChatTags`). `tagged` says that call was made, so it is
+        /// never made again for this chat, whatever it answered.
+        public var tags: [String]
+        public var tagged: Bool
+        public init(pinned: Bool = false, archived: Bool = false,
+                    model: String? = nil, provider: String? = nil,
+                    forget: Bool = false, tags: [String] = [], tagged: Bool = false) {
+            self.pinned = pinned
+            self.archived = archived
+            self.model = model
+            self.provider = provider
+            self.forget = forget
+            self.tags = tags
+            self.tagged = tagged
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case pinned, archived, model, provider, forget, tags, tagged
+        }
+
+        /// Every field optional on the way in: a marks.idx written before a
+        /// field existed still reads, rather than losing every pin with it.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(pinned: try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false,
+                      archived: try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false,
+                      model: try c.decodeIfPresent(String.self, forKey: .model),
+                      provider: try c.decodeIfPresent(String.self, forKey: .provider),
+                      forget: try c.decodeIfPresent(Bool.self, forKey: .forget) ?? false,
+                      tags: try c.decodeIfPresent([String].self, forKey: .tags) ?? [],
+                      tagged: try c.decodeIfPresent(Bool.self, forKey: .tagged) ?? false)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(pinned, forKey: .pinned)
+            try c.encode(archived, forKey: .archived)
+            try c.encodeIfPresent(model, forKey: .model)
+            try c.encodeIfPresent(provider, forKey: .provider)
+            if forget { try c.encode(true, forKey: .forget) }
+            if !tags.isEmpty { try c.encode(tags, forKey: .tags) }
+            if tagged { try c.encode(true, forKey: .tagged) }
+        }
+
+        /// The model for this chat on `provider`, or nil for the person's
+        /// default there.
+        public func model(on provider: String) -> String? {
+            guard let model, !model.isEmpty, self.provider == provider else { return nil }
+            return model
+        }
+    }
+
+    private var marksURL: URL { directory.appendingPathComponent("marks.idx") }
+
+    public func marks() -> [String: Marks] {
+        guard let data = try? Data(contentsOf: marksURL),
+              let map = try? JSONDecoder().decode([String: Marks].self, from: data) else { return [:] }
+        return map
+    }
+
+    /// Pinning takes a thread out of the archive; archiving unpins it.
+    public func setPinned(_ pinned: Bool, for id: String) throws {
+        try mark(id) { $0.pinned = pinned; if pinned { $0.archived = false } }
+    }
+
+    /// nil goes back to the person's default model.
+    public func setModel(_ model: String?, provider: String, for id: String) throws {
+        try mark(id) {
+            $0.model = model
+            $0.provider = model == nil ? nil : provider
+        }
+    }
+
+    public func setArchived(_ archived: Bool, for id: String) throws {
+        try mark(id) { $0.archived = archived; if archived { $0.pinned = false } }
+    }
+
+    /// "Don't remember this chat". Turning it on also takes away any tags the
+    /// chat was given and keeps it from ever being tagged.
+    public func setForget(_ forget: Bool, for id: String) throws {
+        try mark(id) {
+            $0.forget = forget
+            if forget { $0.tags = [] }
+        }
+    }
+
+    /// The tags the cheap model named for this chat; also records that it
+    /// was asked, so it never is again. A chat marked "Don't remember this
+    /// chat" is never tagged, even by a call that was already in flight.
+    public func setTags(_ tags: [String], for id: String) throws {
+        try mark(id) {
+            $0.tagged = true
+            $0.tags = $0.forget ? [] : tags
+        }
+    }
+
+    /// A chat's name and marks, carried to the id it continues under: an
+    /// edited message starts the chat again on a new thread (`Conductor.resend`)
+    /// and its pin, name, model, switch and tags go with it.
+    public func carrySideEntries(from old: String, to new: String) throws {
+        if let title = titles()[old] { try setTitle(title, for: new) }
+        var map = marks()
+        guard let m = map.removeValue(forKey: old) else { return }
+        map[new] = m
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        try JSONEncoder().encode(map).write(to: marksURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marksURL.path)
+    }
+
+    /// Take one tag off a chat, by hand.
+    public func removeTag(_ tag: String, for id: String) throws {
+        try mark(id) { $0.tags.removeAll { $0 == tag } }
+    }
+
+    private func mark(_ id: String, _ change: (inout Marks) -> Void) throws {
+        var map = marks()
+        var m = map[id] ?? Marks()
+        change(&m)
+        map[id] = m == Marks() ? nil : m
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        try JSONEncoder().encode(map).write(to: marksURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marksURL.path)
+    }
+
     /// Newest first, narrowed to threads whose title or any turn contains
     /// `query` (case- and diacritic-insensitive). An empty query is all.
     public func search(_ query: String) -> [Conversation] {
@@ -211,6 +355,10 @@ public struct ConversationStore {
         if map.removeValue(forKey: id) != nil, let data = try? JSONEncoder().encode(map) {
             try? data.write(to: titlesURL, options: .atomic)
         }
+        var marked = marks()
+        if marked.removeValue(forKey: id) != nil, let data = try? JSONEncoder().encode(marked) {
+            try? data.write(to: marksURL, options: .atomic)
+        }
         let target = url(for: id)
         guard FileManager.default.fileExists(atPath: target.path) else { return }
         try FileManager.default.removeItem(at: target)
@@ -219,6 +367,7 @@ public struct ConversationStore {
     public func deleteAll() throws {
         for convo in all() { try delete(id: convo.id) }
         try? FileManager.default.removeItem(at: titlesURL)
+        try? FileManager.default.removeItem(at: marksURL)
     }
 
     /// Drop the least-recently-touched threads once past the cap.

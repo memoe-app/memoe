@@ -1,4 +1,6 @@
 #!/bin/bash
+# NEEDS: debug-moe
+#
 # Integration test for meeting mode's file pipeline, driven through
 # `.build/debug/Moe --meeting-test <dir> <out>` against scripts/fake-hermes.
 # No audio device is opened, nothing is played, and nothing of the user's
@@ -24,6 +26,7 @@
 #                        clip land in meeting.json, in summary.md's Screens
 #                        section, and the caption reaches the summary prompt
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 MOE="$ROOT/.build/debug/Moe"
@@ -109,12 +112,36 @@ assert sorted(r["speakers"]) == [1, 2], r["speakers"]
 assert r["durationSeconds"] > 5, r
 assert r["recordingsDeleted"] is False
 ' "$SCRATCH/out/1/meeting.json" && ok "meeting.json is well-formed" || bad "meeting.json wrong"
-grep -q "^X-Hermes-Session-Key: moe-meeting" "$REQLOG" && ok "session key moe-meeting" || bad "session key missing"
+# Each purpose has a session of its own: the notes were once asked on the
+# session the minute scan had used sixty times, and came back as action
+# items (MeetingBrainSessions.swift has the measurement). So the two keys
+# are required exactly, and their session ids must differ. This check used
+# to be a prefix match on "moe-meeting", which any of the five keys passes.
+KEYS="$(grep -a '^X-Hermes-Session-Key: ' "$REQLOG" | tr -d '\r' | sort -u | sed 's/^X-Hermes-Session-Key: //' | tr '\n' ' ')"
+case " $KEYS" in *" moe-meeting-notes "*) ok "the notes are asked on session key moe-meeting-notes" ;; *) bad "no moe-meeting-notes request (keys seen: $KEYS)" ;; esac
+case " $KEYS" in *" moe-meeting-scan "*)  ok "the minute scan on moe-meeting-scan" ;; *) bad "no moe-meeting-scan request (keys seen: $KEYS)" ;; esac
+# Header order inside a request is not promised, so each key is paired with
+# the session id in the same request block.
+SHARED="$(tr -d '\r' < "$REQLOG" | awk '
+  /^POST /                    { key = ""; id = "" }
+  /^X-Hermes-Session-Key: /   { key = $2 }
+  /^X-Hermes-Session-Id: /    { id = $2 }
+  key != "" && id != ""       { if (key == "moe-meeting-notes") notes[id] = 1
+                                if (key == "moe-meeting-scan")  scan[id] = 1
+                                key = ""; id = "" }
+  END { n = 0; s = 0; both = 0
+        for (i in notes) { n++; if (i in scan) both++ }
+        for (i in scan) s++
+        print n, s, both }')"
+case "$SHARED" in
+  "0 "*|*" 0 "*) bad "could not pair the meeting keys with their session ids ($SHARED) — nothing was compared" ;;
+  *" 0")        ok "and the two never share a session id" ;;
+  *)            bad "the scan and the notes share a session id ($SHARED) — the notes would be answered as action items" ;;
+esac
 grep -q "^Authorization: Bearer test-key" "$REQLOG" && ok "bearer key sent" || bad "no bearer"
 grep -q '<transcript>' "$REQLOG" && grep -q 'them (speaker 1)' "$REQLOG" && ok "transcript fenced in the request" || bad "transcript not in request"
 grep -q 'ONE JSON object' "$REQLOG" && ok "fixed summary prompt present" || bad "prompt missing"
 grep -q "^X-Hermes-Session-Key: moe$" "$REQLOG" && bad "conversation session key leaked" || ok "conversation session untouched"
-grep -q '"meetingSessionID" *: *"' "$MOE_HOME/config.json" && ok "meeting session id persisted" || bad "session id not persisted"
 grep -q "meeting: Notes written" "$MOELOG" && ok "outcome logged" || bad "no outcome line in the log"
 grep -q "meeting: bookmark at 00:03" "$MOELOG" && grep -q "meeting: bookmark at 00:07" "$MOELOG" && ok "bookmarks logged" || bad "bookmark log lines missing"
 grep -q '^## Bookmarks' "$SCRATCH/out/1/summary.md" && grep -q '^- \[00:07\] ' "$SCRATCH/out/1/summary.md" && ok "bookmarks listed in summary.md" || bad "bookmarks missing from summary.md"
@@ -154,7 +181,14 @@ run "$SCRATCH/out/3"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "exit $RC"
 [ ! -f "$SCRATCH/out/3/summary.md" ] && ok "no summary.md" || bad "summary.md written from prose"
 [ -s "$SCRATCH/out/3/transcript.txt" ] && ok "transcript kept" || bad "transcript missing"
-grep -q '"summaryFailure" *: *"the brain.s reply was not notes"' "$SCRATCH/out/3/meeting.json" && ok "meeting.json says why" || bad "reason missing"
+# The record now quotes what came back, so a meeting with no notes can be
+# told from the record alone whether the model refused, answered another
+# question, or returned nothing (MeetingSummary.swift:
+#   record.summaryFailure = "the brain's reply was not notes: " + NotesRequest.excerpt(reply)).
+# This required the sentence to END at "not notes", and failed on the excerpt.
+grep -q '"summaryFailure" *: *"the brain.s reply was not notes: .*Sorry, I cannot summarise' "$SCRATCH/out/3/meeting.json" \
+  && ok "meeting.json says why, and quotes the reply it could not use" \
+  || bad "reason missing or without the reply: $(grep -o '"summaryFailure"[^,}]*' "$SCRATCH/out/3/meeting.json" | head -1)"
 
 echo "== 4. no gateway"
 stop_fake

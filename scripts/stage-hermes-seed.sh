@@ -76,11 +76,16 @@ PYTHON_VERSION="3.14"
 SEED_EXTRAS="${SEED_EXTRAS:-all messaging anthropic edge-tts voice}"
 # pm tool packages (the fork's pm/lock.json). python is the venv's interpreter;
 # node + npm run MCP servers and the WhatsApp bridge; uv is what pm itself
-# needs for any explicit operation; ffmpeg and ripgrep are the other two pm
-# calls REQUIRED — without them every launch warns "install out of sync" and a
-# tool that wants one is refused (lazy installs are off). agent-browser (and
-# the Chrome for Testing it depends on, pm's `chromium`) is the browser lane.
-SEED_TOOLS="${SEED_TOOLS:-python node npm uv ffmpeg ripgrep agent-browser}"
+# needs for any explicit operation; ffmpeg, ripgrep and (since the 0.3.26
+# pin) pnpm are the others pm calls REQUIRED — without them every launch
+# warns "install out of sync" and a tool that wants one is refused (lazy installs are off). `chromium` (Chrome
+# for Testing) is the browser lane. Up to the 0.3.25 pin this list named
+# `agent-browser`, which pulled chromium in as its dependency; upstream's
+# browser rewire (#143146, in since the 0.3.26 pin) removed agent-browser from
+# pm/lock.json, browser_exec drives Chromium over CDP itself, and pm no
+# longer knows the name. Slimming (below) still leaves Chromium out of the
+# download; it is fetched on first launch, as before.
+SEED_TOOLS="${SEED_TOOLS:-python node npm pnpm uv ffmpeg ripgrep chromium}"
 
 die() { echo "✗ $1" >&2; exit 1; }
 

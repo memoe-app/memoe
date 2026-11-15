@@ -199,11 +199,11 @@ enum Skills {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes/skills-catalogue.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes/skills-catalogue.py")
+        if let c = Payload.checkoutPath("moe-home/hermes/skills-catalogue.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
-    /// The Hermes venv's interpreter, not `/usr/bin/python3`.
+    /// The Hermes venv's interpreter, never the system one.
     ///
     /// Reading works under either — the catalogue is stdlib-only on
     /// purpose. **Writing does not**, and deliberately: the script refuses
@@ -211,8 +211,8 @@ enum Skills {
     /// no way to parse the file back and prove the edit landed where it
     /// was aimed. Asking the venv for both halves is what makes
     /// `canWrite` true on a working Mac and honest on a broken one.
-    /// `BrainSetup.python()` falls back to `/usr/bin/python3` itself, so
-    /// this is one call and not a branch.
+    /// `BrainSetup.python()` decides what stands in when that is missing,
+    /// so this is one call and not a branch.
     private static func ask<T: Decodable>(_ args: [String], timeout: TimeInterval = 25) -> T? {
         guard let script = scriptPath() else { return nil }
         let r = ScriptRunner.run(BrainSetup.python(), [script] + args, timeout: timeout)

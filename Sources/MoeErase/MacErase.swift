@@ -1403,7 +1403,7 @@ public struct MacEraseNote: Codable, Equatable, Sendable {
         case .defaults(let domain):
             sentence = "the preferences \(domain) (\(detail))."
         case .loginItem:
-            sentence = "Moe in System Settings › General › Login Items (\(detail)). Remove it there."
+            sentence = "Memoe in System Settings › General › Login Items (\(detail)). Remove it there."
         case .tcc(let id):
             sentence = "the permissions given to \(id) (\(detail))."
         case .process(_, let command):

@@ -1,3 +1,5 @@
+import AppKit
+import MoeChat
 import SwiftUI
 
 /// The box you type into, in Chat and on the island: it grows with what you
@@ -21,7 +23,12 @@ struct ComposerEditor: View {
     var ink: Color = .primary
     var placeholderInk: Color = .secondary
     var focus: FocusState<Bool>.Binding?
+    /// ⌘V with a picture or a copied file attaches it here instead of
+    /// pasting its name as text; nil leaves Paste as plain text.
+    var attach: (([ChatAttachment]) -> Void)? = nil
     let onSubmit: () -> Void
+
+    @State private var paste = PasteWatch()
 
     /// NSTextView's own inset from the left edge of its text container.
     private let lead: CGFloat = 5
@@ -47,6 +54,9 @@ struct ComposerEditor: View {
         }
         .frame(minHeight: lineHeight, maxHeight: lineHeight * CGFloat(maxLines))
         .fixedSize(horizontal: false, vertical: true)
+        .background(PasteAnchor(watch: paste))
+        .onAppear { if let attach { paste.start(attach) } }
+        .onDisappear { paste.stop() }
     }
 
     @ViewBuilder
@@ -75,4 +85,99 @@ struct ComposerEditor: View {
                                           text.components(separatedBy: "\n").count)
         return lineHeight * CGFloat(min(max(lines, 1), maxLines))
     }
+}
+
+/// ⌘V in a composer, read before the text view takes it. `TextEditor` is a
+/// plain-text `NSTextView`: a pasted screenshot did nothing and a file copied
+/// in Finder pasted its name (deep dive §2.12). Paste reaches the text view
+/// through the Edit menu's key equivalent, which a SwiftUI key handler never
+/// sees, so this watches the key itself — only in this composer's window,
+/// only while the text being typed into is this composer's.
+@MainActor
+final class PasteWatch {
+    weak var anchor: NSView?
+    private var monitor: Any?
+
+    func start(_ attach: @escaping ([ChatAttachment]) -> Void) {
+        stop()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.isPaste(event), self.owns(event),
+                  AttachmentIntake.pasteAttaches(.general) else { return event }
+            let taken = AttachmentIntake.take(from: .general)
+            guard !taken.isEmpty else { return event }
+            attach(taken)
+            return nil
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    private func isPaste(_ event: NSEvent) -> Bool {
+        event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+            && event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    /// The key went to a text view that sits where this composer is drawn.
+    private func owns(_ event: NSEvent) -> Bool {
+        guard let anchor, let window = anchor.window, event.window === window,
+              let typing = window.firstResponder as? NSTextView else { return false }
+        let mine = anchor.convert(anchor.bounds, to: nil)
+        let theirs = typing.enclosingScrollView.map { $0.convert($0.bounds, to: nil) }
+            ?? typing.convert(typing.visibleRect, to: nil)
+        return mine.intersects(theirs)
+    }
+}
+
+/// An empty view behind the composer that tells `PasteWatch` where it is.
+private struct PasteAnchor: NSViewRepresentable {
+    let watch: PasteWatch
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        watch.anchor = v
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { watch.anchor = nsView }
+}
+
+/// A ⌘-key for one window: the key goes to whatever has focus there (a text
+/// view, usually), which never passes on a ⌘-key it has no use for, so a
+/// SwiftUI key handler above it never hears it. This hears it first, only
+/// when it was pressed in the window `KeyWatchAnchor` sits in.
+@MainActor
+final class KeyWatch {
+    weak var anchor: NSView?
+    private var monitor: Any?
+
+    func start(key: String, _ action: @escaping () -> Void) {
+        stop()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let window = self.anchor?.window, event.window === window,
+                  KeyWatch.matches(event, key: key) else { return event }
+            action()
+            return nil
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    static func matches(_ event: NSEvent, key: String) -> Bool {
+        event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+            && event.charactersIgnoringModifiers?.lowercased() == key
+    }
+}
+
+struct KeyWatchAnchor: NSViewRepresentable {
+    let watch: KeyWatch
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        watch.anchor = v
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { watch.anchor = nsView }
 }

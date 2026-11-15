@@ -476,8 +476,9 @@ def forgotten_texts(store: Any, targets: Iterable[str]) -> List[str]:
             live = {c.id for c in projection.live}
             last: Dict[str, str] = {}
             text: Dict[str, str] = {}
+            keys = store.opening_keys
             for record in store.claim_records(target):
-                claim = parse_claim(record, store.opening_keys)
+                claim = parse_claim(record, keys)
                 if not claim:
                     continue
                 last[claim["claim"]] = claim["op"]
@@ -608,10 +609,28 @@ def turn_origin() -> str:
         return ""
 
 
+def no_memory() -> bool:
+    """True when the person asked for this chat not to be remembered — Memoe's
+    "Don't remember this chat", sent as X-Hermes-No-Memory on every turn of it
+    and bound by the gateway like the origin. Nothing from such a turn is
+    learned or written as a claim. False with no gateway (a CLI run)."""
+    try:
+        from gateway.session_context import get_turn_no_memory
+        return get_turn_no_memory() is True
+    except Exception:  # noqa: BLE001 — an older Hermes without the header: nothing declared
+        return False
+
+
+#: Why a turn is not read, when the person asked for the chat not to be remembered.
+NOT_REMEMBERED = "the person asked for this chat not to be remembered"
+
+
 def refusal(*, platform: str = "", turn_author: Any = None,
             origin: Optional[str] = None) -> Optional[str]:
     """Why this turn is not the person's to learn from, or None when it is.
     Structural: who started the turn and where, never what it says."""
+    if no_memory():
+        return NOT_REMEMBERED
     origin = turn_origin() if origin is None else origin
     platform = str(platform or "").strip().lower()
     if origin == "background":

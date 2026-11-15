@@ -415,6 +415,16 @@ struct LicensesView: View {
                                                        lineWidth: Theme.Stroke.edge)
                             )
                     }
+                    // A build of main between two releases has the last
+                    // release's version, so it says here that it is not that
+                    // release, and which commit it is.
+                    if let note = BuildInfo.unreleasedNote(Bundle.main.infoDictionary) {
+                        Text(note)
+                            .font(Theme.Typo.ui(12))
+                            .foregroundStyle(Theme.ink3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
                     Text(Updates.controller == nil
                          ? "Built from source — updates come from wherever you got it."
                          : "Keeps itself up to date: a new version is downloaded quietly, and Memoe asks before restarting to install it.")

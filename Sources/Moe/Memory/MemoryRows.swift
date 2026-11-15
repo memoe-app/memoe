@@ -131,6 +131,7 @@ struct MemoryRowView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Forget this")
+                .accessibilityLabel("Forget this")
             }
         }
         .fixedSize()

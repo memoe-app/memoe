@@ -37,11 +37,14 @@ struct ConnectionsView: View {
     /// the Mac rows and nothing else, and the part of the screen this change
     /// is about is the part no picture could reach.
     init(conductor: Conductor, mode: Mode = .services, searching: String = "",
-         selecting: String? = nil, chrome: ChromeExtensionModel? = nil) {
+         selecting: String? = nil, chrome: ChromeExtensionModel? = nil, checked: Date? = nil) {
         self.conductor = conductor
         self.mode = mode
         _search = State(initialValue: searching)
         _selectedID = State(initialValue: selecting)
+        // Only `--settings-snapshot` passes it: a posed list was never
+        // checked, and the "Checked" line is part of the page being drawn.
+        _checkedAt = State(initialValue: checked)
         _chrome = ObservedObject(wrappedValue: chrome ?? ChromeExtensionModel.shared)
     }
     /// Connections › Chrome (ticket #13). A parameter only so
@@ -49,6 +52,8 @@ struct ConnectionsView: View {
     @ObservedObject private var chrome: ChromeExtensionModel
     @State private var setupNote = ""
     @State private var removing: Connection?
+    /// One sign-in of a row with several, waiting for its "are you sure".
+    @State private var removingAccount: AccountRemoval?
     @State private var fullDiskRow: Connection?
     @State private var terminalRow: Connection?
     @State private var advancedOpen = false
@@ -246,6 +251,26 @@ struct ConnectionsView: View {
         } message: {
             Text("Moe forgets the sign-in and stops reading it. Nothing at \(removing?.label ?? "the service") itself changes, and you can connect it again here whenever you like.")
         }
+        // One account of several. The title names it — the address, or
+        // whatever the person called it — because "Remove" beside three rows
+        // is only a confirmation if it says which row it heard.
+        .alert(removingAccount?.title ?? "", isPresented: Binding(get: { removingAccount != nil },
+                                                                    set: { if !$0 { removingAccount = nil } }),
+               presenting: removingAccount) { ask in
+            Button("Remove", role: .destructive) { flow.removeAccount(ask.connection, ask.account) }
+            Button("Cancel", role: .cancel) {}
+        } message: { ask in
+            Text(ask.message)
+        }
+    }
+
+    /// Remove pressed on one account's row. The last one left is the whole
+    /// connection, so it takes Disconnect…'s road — the same alert, the same
+    /// script call, the same cleanup of dead sign-ins behind it. Any other
+    /// goes by its id and leaves the rest alone.
+    private func beginRemoveAccount(_ c: Connection, _ acct: Connection.Account) {
+        if AccountRemoval.isLast(c, acct) { beginRemove(c); return }
+        removingAccount = AccountRemoval(connection: c, account: acct)
     }
 
     /// docs/DEFAULTS.md row 25: the first time a source is connected, ask
@@ -695,6 +720,8 @@ struct ConnectionsView: View {
                              action: { act(on: c) },
                              disconnect: { beginRemove(c) },
                              disconnectOther: { beginRemove($0) },
+                             removeAccount: { beginRemoveAccount(c, $0) },
+                             pressed: { flow.pressPlace = $0 },
                              alternate: { alt in flow.start(alt) },
                              explain: { explaining = c },
                              check: { model.reload() },
@@ -718,7 +745,8 @@ struct ConnectionsView: View {
     /// on a screen about what works that reads as "something is wrong".
     private var brainDetail: some View {
         let p = conductor.config.brainProvider
-        return VStack(alignment: .leading, spacing: Theme.Space.roomy) {
+        return PaneDetail {
+          VStack(alignment: .leading, spacing: Theme.Space.roomy) {
             HStack(alignment: .center, spacing: Theme.Space.cosy) {
                 ServiceIcon(name: p.iconName, label: p.shortName, size: 48)
                 VStack(alignment: .leading, spacing: 4) {
@@ -756,8 +784,9 @@ struct ConnectionsView: View {
                 Text(setupNote).font(Theme.Typo.ui(11)).foregroundStyle(Theme.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
-            HStack(spacing: Theme.Space.small) {
+          }
+        } bar: {
+            PaneActionBar {
                 if conductor.needsSignIn {
                     // The brain's own Claude Code child signs in with a
                     // setup-token, not your interactive login; the script runs
@@ -769,10 +798,10 @@ struct ConnectionsView: View {
                 PaneButton(title: "Change in Settings…", large: true) {
                     SettingsWindow.show(conductor: conductor, at: .brain)
                 }
+            } trailing: {
+                EmptyView()
             }
         }
-        .padding(Theme.Space.wide)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// The one button's meaning per row.
@@ -840,6 +869,60 @@ struct ConnectionsView: View {
     }
 }
 
+// MARK: - One account of several
+
+extension Connection {
+    /// What the screen calls one sign-in: the name it was given (for Google,
+    /// the address), or its place in the list when nobody has named it. One
+    /// function, because the row, the confirmation and the sheet afterwards
+    /// must all say the same words about the same account.
+    func accountLabel(_ acct: Account) -> String {
+        if !acct.who.isEmpty { return acct.who }
+        let index = accounts.firstIndex { $0.id == acct.id } ?? 0
+        return "Account \(index + 1)"
+    }
+
+    /// The sign-ins the detail lists: the live ones, or — only when nothing
+    /// is live — the dead ones, which then explain why the row is not working.
+    var shownAccounts: [Account] {
+        accounts.filter { $0.live || liveAccounts == 0 }
+    }
+}
+
+/// "Remove this one account?" — what is being asked, and the words for it.
+struct AccountRemoval: Equatable {
+    let connection: Connection
+    let account: Connection.Account
+
+    var label: String { connection.accountLabel(account) }
+
+    /// Whether removing `acct` leaves the row with no account to show. Then
+    /// it is not "one of several" and the question is Disconnect's.
+    static func isLast(_ c: Connection, _ acct: Connection.Account) -> Bool {
+        c.shownAccounts.allSatisfy { $0.id == acct.id }
+    }
+
+    var title: String { "Remove \(label) from \(connection.label)?" }
+
+    var message: String {
+        let others = connection.shownAccounts.filter { $0.id != account.id }.count
+        let stay = others == 1 ? "Your other \(connection.label) account stays connected"
+                               : "Your other \(others) \(connection.label) accounts stay connected"
+        return "Moe forgets this sign-in and stops using it. \(stay), and nothing at \(connection.label) itself changes."
+    }
+
+    /// What connect.sh is asked to do: this account's id, never the bare
+    /// service. `connect.sh --remove <service>` with no id removes every
+    /// account, so an empty id is refused here rather than sent — nil means
+    /// "do not launch anything".
+    static func arguments(_ c: Connection, _ acct: Connection.Account) -> [String]? {
+        let id = acct.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard c.kind == .composio, !c.connectName.isEmpty, !id.isEmpty,
+              c.accounts.contains(where: { $0.id == acct.id }) else { return nil }
+        return ["--remove", c.connectName, id]
+    }
+}
+
 // MARK: - The detail
 
 /// Everything about one connection, and the buttons that act on it. The
@@ -857,6 +940,13 @@ struct ConnectionDetail: View {
     /// existing `disconnect` closes over the parent row, so a connected
     /// alternate had nothing that could remove it.
     var disconnectOther: (Connection) -> Void = { _ in }
+    /// Remove ONE sign-in and leave the others. The screen asks first, by
+    /// name (`ConnectionsView.beginRemoveAccount`).
+    var removeAccount: (Connection.Account) -> Void = { _ in }
+    /// D9.14: where the button that was just pressed is, said before its
+    /// action runs — so the press that leads to a sign-in is judged against
+    /// that button's own rectangle and not against the whole window.
+    var pressed: (HumanPressPlace) -> Void = { _ in }
     var alternate: (Connection) -> Void = { _ in }
     var explain: () -> Void = {}
     var check: () -> Void = {}
@@ -898,7 +988,27 @@ struct ConnectionDetail: View {
     /// warning and no reason.
     static let signInFirst = "Your connections belong to your Memoe account, so they follow you to your other Macs and can be switched off in one place. Sign in with Google once, and this connects right after."
 
+    /// Whether the bar under the page has anything in it.
+    static func hasActions(_ c: Connection, needsAccount: Bool) -> Bool {
+        c.state == .connected || needsAccount || primaryTitle(c) != nil
+            || c.state == .unavailable || canDisconnect(c)
+    }
+
+    /// `PaneDetail`: the page scrolls inside the pane and the buttons are
+    /// pinned under it. This was one stack with a `Spacer` above the buttons
+    /// and no scroll view, so its minimum height was everything in it: three
+    /// accounts and the app-password row made the pane taller than the
+    /// window, and the window's content was centred with its top and bottom
+    /// outside the glass (the owner's report, 2026-11-12).
     var body: some View {
+        PaneDetail(showsBar: Self.hasActions(c, needsAccount: needsAccount)) {
+            page
+        } bar: {
+            actions
+        }
+    }
+
+    private var page: some View {
         VStack(alignment: .leading, spacing: Theme.Space.roomy) {
             header
             canDo
@@ -921,11 +1031,7 @@ struct ConnectionDetail: View {
             // The Telegram bot, connected: which chat is the owner's, confirmed
             // with a code shown only here — the cloud's (`CloudLink`).
             if let panel = Cloud.link.connectionPanel(for: c) { panel }
-            Spacer(minLength: 0)
-            actions
         }
-        .padding(Theme.Space.wide)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var header: some View {
@@ -937,6 +1043,7 @@ struct ConnectionDetail: View {
                 Text(c.label)
                     .font(Theme.Typo.heading(22))
                     .foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Theme.Space.small) {
                     Circle().fill(ConnectionsView.stateColour(c)).frame(width: 7, height: 7)
                     Text(stateLine)
@@ -1049,19 +1156,7 @@ struct ConnectionDetail: View {
                         // of something that already got replaced, and three
                         // of them made a working Gmail look broken.
                         if acct.live || c.liveAccounts == 0 {
-                            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.small) {
-                                kv(acct.live ? "Signed in" : "Not working",
-                                   accountWords(acct, index: index))
-                                // Naming is the only way to tell two accounts
-                                // of one service apart: Composio records no
-                                // identity, and where we can ask the service
-                                // (Google) it answers for one account, not
-                                // whichever the person meant.
-                                Button("Rename") { renameAccount(c, acct) }
-                                    .buttonStyle(.plain)
-                                    .font(Theme.Typo.ui(11, weight: .semibold))
-                                    .foregroundStyle(Theme.accentDeep)
-                            }
+                            accountRow(acct, words: accountWords(acct, index: index))
                         }
                     }
                 }
@@ -1070,9 +1165,81 @@ struct ConnectionDetail: View {
         }
     }
 
+    /// One sign-in: what it is called, and Rename and Remove for it.
+    ///
+    /// On one line when the pane is wide enough to hold the whole address
+    /// beside the buttons. When it is not — at the window's smallest this
+    /// column is about 270pt — the buttons go under the address, because the
+    /// alternative is the address squeezed into what is left and broken
+    /// every five letters.
+    private func accountRow(_ acct: Connection.Account, words: String) -> some View {
+        let name = acct.live ? "Signed in" : "Not working"
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.base) {
+                kvName(name)
+                Text(verbatim: words)
+                    .font(Theme.Typo.ui(13))
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1)
+                    .fixedSize()
+                Spacer(minLength: Theme.Space.small)
+                accountButtons(acct)
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.snug) {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.base) {
+                    kvName(name)
+                    Text(verbatim: words)
+                        .font(Theme.Typo.ui(13))
+                        .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: Theme.Space.base) {
+                    Color.clear.frame(width: 96, height: 1)
+                    accountButtons(acct)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.vertical, Theme.Space.small)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.rule).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func accountButtons(_ acct: Connection.Account) -> some View {
+        // Naming is the only way to tell two accounts of one service apart:
+        // Composio records no identity, and where we can ask the service
+        // (Google) it answers for one account, not whichever the person meant.
+        Button("Rename") { renameAccount(c, acct) }
+            .buttonStyle(.plain)
+            .font(Theme.Typo.ui(11, weight: .semibold))
+            .foregroundStyle(Theme.accentDeep)
+            .fixedSize()
+        // One account, not the service: Disconnect… below is all of them,
+        // and until this was here the only way to drop one address was to
+        // find that out from a chooser behind a button that says it
+        // disconnects Gmail.
+        Button("Remove") { removeAccount(acct) }
+            .buttonStyle(.plain)
+            .font(Theme.Typo.ui(11, weight: .semibold))
+            .foregroundStyle(Theme.bad)
+            .fixedSize()
+            .accessibilityLabel("Remove \(c.accountLabel(acct))")
+    }
+
+    private func kvName(_ name: String) -> some View {
+        Text(name)
+            .font(Theme.Typo.label(9))
+            .tracking(Theme.tracking)
+            .foregroundStyle(Theme.ink3)
+            .frame(width: 96, alignment: .leading)
+    }
+
     /// What to call an account that Composio gave no name for.
     private func accountWords(_ acct: Connection.Account, index: Int) -> String {
-        let name = acct.who.isEmpty ? "Account \(index + 1)" : acct.who
+        let name = c.accountLabel(acct)
         if acct.live { return name }
         // "Expired" and "half-finished" are different problems with different
         // fixes, and lumping them under "not connected" is what sent Izzy to
@@ -1113,11 +1280,7 @@ struct ConnectionDetail: View {
 
     private func kv(_ name: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Space.base) {
-            Text(name)
-                .font(Theme.Typo.label(9))
-                .tracking(Theme.tracking)
-                .foregroundStyle(Theme.ink3)
-                .frame(width: 96, alignment: .leading)
+            kvName(name)
             Text(verbatim: value)
                 .font(Theme.Typo.ui(13))
                 .foregroundStyle(Theme.ink)
@@ -1163,7 +1326,7 @@ struct ConnectionDetail: View {
                             PaneButton(title: "Remove", danger: true) { disconnectAlternate(alt) }
                         }
                     } else {
-                        PaneButton(title: "Connect") { alternate(alt) }
+                        ConnectPressButton(title: "Connect", large: false, pressed: pressed) { alternate(alt) }
                     }
                 }
                 .padding(.vertical, Theme.Space.small)
@@ -1282,17 +1445,19 @@ struct ConnectionDetail: View {
         disconnectOther(alt)
     }
 
+    /// The bar under the page. Every button that can start a connect is a
+    /// `ConnectPressButton`, so it tells the flow where it is (D9.14).
     private var actions: some View {
-        HStack(spacing: Theme.Space.small) {
+        PaneActionBar {
             if c.state == .connected {
                 if c.authKind == .appPassword {
-                    PaneButton(title: "Add a mailbox", large: true, action: action)
+                    ConnectPressButton(title: "Add a mailbox", pressed: pressed, action: action)
                 } else if c.kind == .composio && !c.isAlwaysOn {
                     // A connected row never reaches primaryTitle — this branch
                     // returns before it — so putting "Add another account"
                     // there made it dead code, and the button simply did not
                     // exist. Which is what Izzy saw, and said twice.
-                    PaneButton(title: "Add another", large: true, action: action)
+                    ConnectPressButton(title: "Add another", pressed: pressed, action: action)
                 } else if c.name == "slack" && c.authKind == .oneClick {
                     // The same dead-code shape as the Composio branch above:
                     // Self.primaryTitle(c) computes "Add to Slack" for the
@@ -1301,7 +1466,7 @@ struct ConnectionDetail: View {
                     // never reaches primaryTitle — this `if c.state ==
                     // .connected` block returns before it. The button
                     // existed in the title logic and nowhere on screen.
-                    PaneButton(title: "Add to Slack", large: true, action: action)
+                    ConnectPressButton(title: "Add to Slack", pressed: pressed, action: action)
                 } else if c.name == "moemail" {
                     // Moe's own email address (slice G3): the address is the
                     // thing a person wants from this row -- to put in their
@@ -1315,7 +1480,7 @@ struct ConnectionDetail: View {
                             }
                             .disabled(c.address.isEmpty)
                         } else {
-                            PaneButton(title: title, large: true, action: action)
+                            ConnectPressButton(title: title, pressed: pressed, action: action)
                         }
                     }
                 }
@@ -1324,12 +1489,13 @@ struct ConnectionDetail: View {
                     .opacity(checking ? 0.5 : 1)
             } else if needsAccount {
                 VStack(alignment: .leading, spacing: Theme.Space.tight) {
-                    PaneButton(title: "Sign in with Google to connect", prominent: true, large: true, action: action)
+                    ConnectPressButton(title: "Sign in with Google to connect", prominent: true,
+                                       pressed: pressed, action: action)
                     // D9.4: under every Google sign-in button.
                     if let line = Cloud.link.signInTermsLine() { line }
                 }
             } else if let title = Self.primaryTitle(c) {
-                PaneButton(title: title, prominent: true, large: true, action: action)
+                ConnectPressButton(title: title, prominent: true, pressed: pressed, action: action)
             } else if isBlocked {
                 if Self.offersCheckAgain(c) {
                     PaneButton(title: "Check again", symbol: "arrow.clockwise", large: true, action: checkAgain)
@@ -1340,11 +1506,56 @@ struct ConnectionDetail: View {
                 // yet" and no way to find out what would change it.
                 PaneButton(title: "What's needed", large: true, action: explain)
             }
-            Spacer(minLength: 0)
+        } trailing: {
             if Self.canDisconnect(c) {
                 PaneButton(title: c.authKind == .consent ? "Turn off" : "Disconnect…", large: true, danger: true, action: disconnect)
             }
         }
+    }
+}
+
+/// A button that starts a connect, and says where it is when it is pressed
+/// (D9.14). The Google sign-in a first connect leads to answers only to a
+/// person's press, and that press is this button's — but it was being judged
+/// against the whole window (`HumanPressPlace.windowOfCurrentEvent`), because
+/// the button had no place of its own: a live click anywhere in the window
+/// would have done. The probe behind it is AppKit's own rectangle for it,
+/// read at the moment of the press; `pressed` hands that to the flow before
+/// the action runs, in the same event.
+struct ConnectPressButton: View {
+    let title: String
+    var prominent = false
+    var large = true
+    let pressed: (HumanPressPlace) -> Void
+    let action: () -> Void
+    @State private var place: HumanPressPlace
+
+    /// `place` is a parameter only so a test can hold the one the probe
+    /// fills in; the screen never passes it.
+    @MainActor
+    init(title: String, prominent: Bool = false, large: Bool = true, place: HumanPressPlace? = nil,
+         pressed: @escaping (HumanPressPlace) -> Void, action: @escaping () -> Void) {
+        self.title = title
+        self.prominent = prominent
+        self.large = large
+        _place = State(initialValue: place ?? HumanPressPlace())
+        self.pressed = pressed
+        self.action = action
+    }
+
+    var body: some View {
+        PaneButton(title: title, prominent: prominent, large: large) {
+            Self.press(place, pressed: pressed, action: action)
+        }
+        .background(HumanPressProbe(place))
+    }
+
+    /// The press: where first, then what. The flow reads the place
+    /// synchronously inside `action` (`ConnectFlow.needsAccount`), so the
+    /// order is the whole point.
+    static func press(_ place: HumanPressPlace, pressed: (HumanPressPlace) -> Void, action: () -> Void) {
+        pressed(place)
+        action()
     }
 }
 
@@ -1636,6 +1847,28 @@ final class ConnectFlow: ObservableObject {
     /// Signs in, founds or joins the tenant, stores the Composio key, and
     /// returns when `.env` carries it. Returns the address signed in with.
     var signInToAccount: (() async throws -> String)?
+    /// D9.14: where the button that is starting this flow is, set by that
+    /// button in its own action (`ConnectPressButton`) and good for exactly
+    /// one `start` — `takePressPlace` hands it over and forgets it, so a
+    /// later start from somewhere else (the sheet's "Also" link) is never
+    /// judged against a button in another window.
+    var pressPlace: HumanPressPlace?
+    func takePressPlace() -> HumanPressPlace? {
+        defer { pressPlace = nil }
+        return pressPlace
+    }
+    /// True while the sheet is about taking something away. The done and
+    /// failed steps read it: "what just became possible" and "the sign-in
+    /// page can time out" are sentences about connecting.
+    @Published private(set) var removing = false
+
+    /// The sheet in one of its steps without anything having run, for
+    /// `--settings-snapshot`.
+    func pose(_ c: Connection, phase: Phase, removing: Bool = false) {
+        connection = c
+        self.phase = phase
+        self.removing = removing
+    }
 
     private var child: ScriptRunner.Child?
     private var pollTask: Task<Void, Never>?
@@ -1687,6 +1920,9 @@ final class ConnectFlow: ObservableObject {
     nonisolated static let pickTimeout: TimeInterval = 300
 
     func start(_ c: Connection) {
+        // Whatever this start does with the press, the next one gets its own.
+        defer { pressPlace = nil }
+        removing = false
         connection = c
         values = [:]
         pastedAddress = ""
@@ -1772,7 +2008,9 @@ final class ConnectFlow: ObservableObject {
                 guard self?.presented == true else { return }
                 then()
             } catch {
-                self?.phase = .failed("Couldn't sign you in: \(error). Nothing was connected; try again.")
+                self?.phase = .failed(CertificateFailure.matches("\(error)")
+                    ? CertificateFailure.sentence
+                    : "Couldn't sign you in: \(error). Nothing was connected; try again.")
             }
         }
     }
@@ -1902,7 +2140,15 @@ final class ConnectFlow: ObservableObject {
     /// these, so the sheet never leaves someone holding an error and no idea
     /// what to do with it.
     var nextStep: String {
+        // A connection that could not be made securely is never the key or
+        // the page: the advice below would send someone to paste it again.
+        if case .failed(let text) = phase, text == CertificateFailure.sentence {
+            return CertificateFailure.nextStep
+        }
         guard let c = connection else { return "Close this and try again. Nothing was changed." }
+        // A removal that failed has none of the connect advice below to
+        // offer: there was no page to time out and no key to copy again.
+        if removing { return "Close this and try again in a moment. Press Check now first if the list looks out of date." }
         switch c.authKind {
         case .appPassword:
             return "Check the address is right, and that all 16 letters came across. If Google says the password is wrong, delete that one on Google's app passwords page, create a fresh one, and paste that instead."
@@ -1981,8 +2227,15 @@ final class ConnectFlow: ObservableObject {
                 // waits for THIS Mac's word. The status poll above has just
                 // written it into the marker, so ask for it here rather than
                 // spin until the sheet times out (second review of slice G1).
-                if name == "platform/slack", let model {
-                    let found = await model.refreshPairings().filter(\.isSlackInstall)
+                // The same for Telegram: the bot is made, the phone has said
+                // hello, and the status reads "waiting to be let in" — never
+                // "connected" until someone approves. Polling only for
+                // connected spun the sheet on "Finish in Telegram…" until it
+                // timed out, with the person's own hello unanswered behind it
+                // (owner, 2026-11-13).
+                if name == "platform/slack" || name == "platform/telegram", let model {
+                    let slack = name == "platform/slack"
+                    let found = await model.refreshPairings().filter { $0.isSlackInstall == slack }
                     if Task.isCancelled { return }
                     if !found.isEmpty {
                         await MainActor.run { self.waiting = found; self.startPairing() }
@@ -2201,6 +2454,7 @@ final class ConnectFlow: ObservableObject {
         approved = []
         needsRestart = false
         changed = false
+        removing = false
         presented = true
         phase = .working("Adding \(name)\u{2026}")
         guard let script = locateScript("connect.sh") else { phase = .failed(Self.missingConnect); return }
@@ -2400,6 +2654,7 @@ final class ConnectFlow: ObservableObject {
     func remove(_ c: Connection) {
         connection = c
         presented = true
+        removing = true
         if c.authKind == .consent { setConsent(c, on: false); return }
         let name = c.authKind == .oneClick ? "platform/\(c.name)" : c.connectName
         // A row with nothing to forget (a macOS permission) has no name for
@@ -2418,9 +2673,7 @@ final class ConnectFlow: ObservableObject {
         // only available answer is "both", and someone loses their work
         // account trying to remove their personal one.
         if c.kind == .composio, c.liveAccounts > 1 {
-            phase = .chooseMailbox(c.accounts.enumerated().compactMap { i, a in
-                a.live ? (a.who.isEmpty ? "Account \(i + 1)" : a.who) : nil
-            })
+            phase = .chooseMailbox(c.accounts.filter(\.live).map { c.accountLabel($0) })
             return
         }
         if c.kind == .mac, c.name == "gmail" {
@@ -2496,6 +2749,7 @@ final class ConnectFlow: ObservableObject {
     func setConsent(_ c: Connection, on: Bool) {
         connection = c
         presented = true
+        removing = !on
         phase = .working(on ? "Turning \(c.label) on…" : "Turning \(c.label) off…")
         let run = runConsent
         let verb = on ? "grant" : "revoke"
@@ -2540,33 +2794,61 @@ final class ConnectFlow: ObservableObject {
     func removeChosen(_ label: String) {
         guard let c = connection else { return }
         guard c.kind == .composio else { removeGmail(label); return }
-        let live = c.accounts.enumerated().filter { $0.element.live }
-        let hit = live.first { i, a in (a.who.isEmpty ? "Account \(i + 1)" : a.who) == label }
-        guard let account = hit?.element else {
+        guard let account = c.accounts.first(where: { $0.live && c.accountLabel($0) == label }) else {
             // Never fall through to removing everything. A label that does
             // not resolve is a bug in this file, and the cost of guessing is
             // someone's other account.
             phase = .failed("Couldn't tell which account that was, so nothing was removed.")
             return
         }
-        phase = .working("Disconnecting \(label)…")
-        let call = ["--remove", c.connectName, account.id]
+        removeAccount(c, account)
+    }
+
+    /// One sign-in of a brokered service, by its id; the others stay. This
+    /// is `connect.sh --remove composio/<service> <account-id>`, which is
+    /// `composio.py disconnect <service> <id>` — it deletes that one
+    /// connected account at Composio and touches no other. Reached from the
+    /// account's own Remove (after the alert that names it) and from the
+    /// Disconnect… chooser.
+    func removeAccount(_ c: Connection, _ account: Connection.Account) {
+        connection = c
+        presented = true
+        removing = true
+        changed = false
+        let label = c.accountLabel(account)
+        guard let call = AccountRemoval.arguments(c, account) else {
+            // No id is not "all of them". Say so and launch nothing.
+            phase = .failed("Couldn't tell which account that was, so nothing was removed.")
+            return
+        }
+        phase = .working("Removing \(label)…")
+        let launch = launchScript
+        let script = locateScript("connect.sh")
+        let missing = Self.missingConnect
         Task {
-            let r = await ScriptRunner.offMain {
-                ScriptRunner.connect(call, answers: nil, timeout: 60,
-                                     started: { child in Task { @MainActor in self.child = child } })
+            let r = await ScriptRunner.offMain { () -> ScriptRunner.Result in
+                guard let script else { return ScriptRunner.Result(status: -1, output: missing, timedOut: false) }
+                return launch(script, call, nil, 60, false, [:],
+                              { child in Task { @MainActor in self.child = child } }, nil)
             }
             await MainActor.run {
                 self.child = nil
+                // The list is read again either way: a removal that failed
+                // half-way is exactly when the screen's idea of the accounts
+                // is least to be trusted.
                 self.changed = true
-                self.phase = r.status == 0 ? .done("\(label) is disconnected. The others stay connected.")
-                                           : .failed(r.lastHumanLine.isEmpty ? "Couldn't disconnect." : r.lastHumanLine)
+                self.phase = r.status == 0
+                    ? .done(c.shownAccounts.count == 2
+                            ? "\(label) is removed. The other account stays connected."
+                            : "\(label) is removed. The others stay connected.")
+                    : .failed(r.lastHumanLine.isEmpty ? "Couldn't remove \(label)." : r.lastHumanLine)
             }
         }
     }
 
     func removeGmail(_ address: String) {
         guard let c = connection else { return }
+        removing = true
         phase = .working(address.isEmpty ? "Disconnecting \(c.label)…" : "Disconnecting \(address)…")
         var args = ["--remove", "gmail"]
         if !address.isEmpty { args.append(address) }
@@ -2612,7 +2894,7 @@ struct ConnectSheet: View {
                     Label(text, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     // One line saying what just became possible, so "connected"
                     // means something.
-                    if let g = flow.guide {
+                    if let g = flow.guide, !flow.removing {
                         Text(g.afterConnected).font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if !g.awake.isEmpty {
@@ -2620,7 +2902,7 @@ struct ConnectSheet: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    alternates
+                    if !flow.removing { alternates }
                     HStack { Spacer(); Button("Done") { flow.close() }.keyboardShortcut(.defaultAction) }
                 case .failed(let text):
                     Label { Text(verbatim: text).fixedSize(horizontal: false, vertical: true) }
@@ -2628,8 +2910,12 @@ struct ConnectSheet: View {
                     // Never an error on its own: what to do about it.
                     Text(flow.nextStep).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Nothing was changed, and you can close this and carry on.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    // Not said of a removal: one that failed part-way may
+                    // have changed something, and the list is read again.
+                    if !flow.removing {
+                        Text("Nothing was changed, and you can close this and carry on.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     HStack {
                         if flow.offerKeys { Button("Make the bot yourself instead…") { flow.fallBackToKeys() } }
                         Spacer()

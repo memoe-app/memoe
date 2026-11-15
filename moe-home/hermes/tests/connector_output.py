@@ -267,7 +267,7 @@ IM_SCHEMA = """
 CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
 CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, display_name TEXT);
 CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, is_from_me INTEGER,
-  handle_id INTEGER);
+  handle_id INTEGER, attributedBody BLOB);
 CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
 """
 
@@ -290,7 +290,7 @@ def imessage(verb, chats, *args):
                 h += 1
                 m += 1
                 con.execute("insert into handle values (?, ?)", (h, sender))
-                con.execute("insert into message values (?, ?, ?, 0, ?)", (m, text, stamp, h))
+                con.execute("insert into message values (?, ?, ?, 0, ?, NULL)", (m, text, stamp, h))
                 con.execute("insert into chat_message_join values (?, ?)", (ci, m))
         con.commit()
         con.close()

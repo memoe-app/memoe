@@ -21,7 +21,7 @@ struct ChromeExtensionRow: View {
                     Text(model.word)
                         .font(Theme.Typo.ui(11))
                         .foregroundStyle(state.good && model.fileAccessWarning == nil && !model.needsUpdate ? Theme.good
-                                         : (state == .waiting || model.fileAccessWarning != nil || model.needsUpdate
+                                         : (state.warn || model.fileAccessWarning != nil || model.needsUpdate
                                             ? Theme.warn : Theme.ink3))
                         .lineLimit(1)
                 }
@@ -46,7 +46,11 @@ struct ChromeExtensionDetail: View {
 
     var body: some View {
         let state = model.state
-        VStack(alignment: .leading, spacing: Theme.Space.roomy) {
+        // `PaneDetail`: the page scrolls and the buttons stay under it. The
+        // three steps of the waiting state are the tallest thing this side
+        // ever shows, and they used to push the buttons out of the window.
+        PaneDetail {
+          VStack(alignment: .leading, spacing: Theme.Space.roomy) {
             HStack(alignment: .center, spacing: Theme.Space.cosy) {
                 ServiceIcon(name: "chrome", label: "Chrome", size: 48)
                 VStack(alignment: .leading, spacing: 4) {
@@ -54,7 +58,7 @@ struct ChromeExtensionDetail: View {
                         .font(Theme.Typo.heading(22))
                         .foregroundStyle(Theme.ink)
                     HStack(spacing: Theme.Space.small) {
-                        Circle().fill(state.good ? Theme.good : (state == .waiting ? Theme.warn : Theme.ink3))
+                        Circle().fill(state.good ? Theme.good : (state.warn ? Theme.warn : Theme.ink3))
                             .frame(width: 7, height: 7)
                         Text(state.word)
                             .font(Theme.Typo.ui(12, weight: .medium))
@@ -64,6 +68,13 @@ struct ChromeExtensionDetail: View {
             }
             if model.needsUpdate {
                 Label(ChromeExtension.Copy.update, systemImage: "arrow.triangle.2.circlepath")
+                    .font(Theme.Typo.ui(12, weight: .medium))
+                    .foregroundStyle(Theme.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: Theme.measure, alignment: .leading)
+            }
+            if let why = model.why {
+                Label(why, systemImage: state == .cantReach ? "exclamationmark.triangle.fill" : "info.circle")
                     .font(Theme.Typo.ui(12, weight: .medium))
                     .foregroundStyle(Theme.warn)
                     .fixedSize(horizontal: false, vertical: true)
@@ -80,6 +91,22 @@ struct ChromeExtensionDetail: View {
                 settingsLabel("What it does")
                 prose(ChromeExtension.Copy.whatItDoes)
                 prose(ChromeExtension.Copy.why, tone: Theme.ink3)
+            }
+            if state == .notInstalled, ChromeExtension.storeURL != nil, model.report?.hostInstalled == true,
+               model.report?.enabled == true {
+                // Add to Chrome was clicked: the listing is open in Chrome.
+                VStack(alignment: .leading, spacing: Theme.Space.snug) {
+                    settingsLabel("In Chrome")
+                    ForEach(Array(ChromeExtension.Copy.storeSteps.enumerated()), id: \.offset) { i, step in
+                        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.small) {
+                            Text("\(i + 1)").font(Theme.Typo.ui(12, weight: .semibold)).foregroundStyle(Theme.ink3)
+                            prose(step)
+                        }
+                    }
+                    Text(ChromeExtension.Copy.storeFallback)
+                        .font(Theme.Typo.ui(11)).foregroundStyle(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if state == .waiting, ChromeExtension.storeURL == nil {
                 VStack(alignment: .leading, spacing: Theme.Space.snug) {
@@ -102,8 +129,9 @@ struct ChromeExtensionDetail: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: Theme.measure, alignment: .leading)
             }
-            Spacer(minLength: 0)
-            HStack(spacing: Theme.Space.small) {
+          }
+        } bar: {
+            PaneActionBar {
                 if model.needsUpdate {
                     PaneButton(title: model.busy ? "Updating…" : "Update", prominent: true, large: true) {
                         Task { await model.setUp() }
@@ -111,24 +139,36 @@ struct ChromeExtensionDetail: View {
                 }
                 switch state {
                 case .notInstalled:
-                    PaneButton(title: model.busy ? "Setting up…" : "Set up", prominent: true, large: true) {
+                    PaneButton(title: model.busy ? "Setting up…"
+                                   : (ChromeExtension.storeURL == nil ? "Set up" : "Add to Chrome"),
+                               prominent: true, large: true) {
                         Task { await model.setUp() }
                     }
                 case .waiting:
                     if ChromeExtension.storeURL == nil {
                         PaneButton(title: "Show folder", symbol: "folder", prominent: true, large: true) { model.showFolder() }
+                        PaneButton(title: "Open Chrome's Extensions page", large: true) { model.openExtensionsPage() }
+                    } else {
+                        PaneButton(title: "Open Chrome", prominent: true, large: true) { model.openChromeExtensions() }
                     }
-                    PaneButton(title: "Open Chrome's Extensions page", large: true) { model.openExtensionsPage() }
+                    PaneButton(title: "Turn off", large: true) { Task { await model.setEnabled(false) } }
+                case .cantReach:
+                    PaneButton(title: model.busy ? "Repairing…" : "Repair", prominent: true, large: true) {
+                        Task { await model.setUp(openChrome: false) }
+                    }
+                    PaneButton(title: "Turn off", large: true) { Task { await model.setEnabled(false) } }
+                case .wrongProfile:
+                    PaneButton(title: "Add to this profile", prominent: true, large: true) { model.openExtensionsPage() }
                     PaneButton(title: "Turn off", large: true) { Task { await model.setEnabled(false) } }
                 case .connected:
                     PaneButton(title: "Turn off", large: true) { Task { await model.setEnabled(false) } }
                 case .off:
                     PaneButton(title: "Turn on", prominent: true, large: true) { Task { await model.setEnabled(true) } }
                 }
+            } trailing: {
+                EmptyView()
             }
         }
-        .padding(Theme.Space.wide)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { model.startPolling() }
         .onDisappear { model.stopPolling() }
     }

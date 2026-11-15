@@ -47,25 +47,124 @@ enum BrainSetup {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes/configure-hermes.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes/configure-hermes.py")
+        if let c = Payload.checkoutPath("moe-home/hermes/configure-hermes.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
-    /// The script needs PyYAML and Hermes's loader: its venv. Debug builds
-    /// honour `MOE_HERMES_PYTHON` so a test can point it elsewhere.
+    /// **The one Python Moe runs anything with**: the interpreter that ships
+    /// with it, in the thinking part's own environment. Debug builds honour
+    /// `MOE_HERMES_PYTHON` so a test can point it elsewhere.
+    ///
+    /// Never the system one. On a Mac without Apple's developer tools — which
+    /// is most people's — the `python3` in `/usr/bin` is not Python: it is a
+    /// stub that puts up "install the command line developer tools?" and
+    /// exits. Ten readers used to launch it, so opening the Memory page drew
+    /// that dialog and then "Nothing about you yet" over a full memory.
+    ///
+    /// When Moe's own interpreter is missing (an install that has not
+    /// finished, or a broken one), the stdlib-only readers — usage, history,
+    /// activity — were deliberately kept working so a Mac could still be told
+    /// what happened before it broke. That survives where it is safe: a
+    /// *real* interpreter inside the developer tools, by its full path, which
+    /// exists only when the tools do and so can never be the stub. With
+    /// neither, the answer is Moe's own path: launching it fails at once and
+    /// every caller says it could not look.
     static func python() -> String {
         if let env = TestHooks.env("MOE_HERMES_PYTHON") { return env }
-        let venv = NSHomeDirectory() + "/.hermes/hermes-agent/.venv/bin/python"
-        return FileManager.default.isExecutableFile(atPath: venv) ? venv : "/usr/bin/python3"
+        let fm = FileManager.default
+        if fm.isExecutableFile(atPath: bundledPython) { return bundledPython }
+        return developerPythons.first { fm.isExecutableFile(atPath: $0) } ?? bundledPython
     }
 
+    /// Laid down from the seed inside the app (`HermesSeed`).
+    static var bundledPython: String {
+        NSHomeDirectory() + "/.hermes/hermes-agent/.venv/bin/python"
+    }
+
+    /// `path` with Moe's own interpreter in front of it, so that a bare
+    /// `python3` — a helper's `#!/usr/bin/env python3` line, or the word in
+    /// one of its shell scripts — is the same Python `python()` names.
+    ///
+    /// Every helper Moe starts by its own first line resolved `python3`
+    /// through a PATH that began `~/.local/bin:/opt/homebrew/bin:
+    /// /usr/local/bin`, which is whatever Python that Mac happens to have. On
+    /// 2026-11-11 a python.org Python 3.15 arrived in `/usr/local/bin` on the
+    /// owner's Mac. That installer ships OpenSSL with an **empty** trust
+    /// store until its "Install Certificates" step is run (measured: `ssl.
+    /// get_default_verify_paths().cafile` is None), so every HTTPS call any
+    /// connector made failed with CERTIFICATE_VERIFY_FAILED — Gmail's "Add
+    /// another" said "could not start the sign-in", and Disconnect could not
+    /// reach Composio either. On a Mac without the developer tools the same
+    /// lookup ends at the `/usr/bin/python3` stub instead.
+    ///
+    /// The directory is the thinking part's environment (`.venv/bin`), not
+    /// the interpreter behind it: a symlink to that interpreter from anywhere
+    /// else starts outside the environment (measured — no PyYAML), and
+    /// configure-hermes.py's own re-exec cannot notice, because both resolve
+    /// to one file.
+    ///
+    /// Added only when `<dir>/python3` can be run. A directory that is not
+    /// there is not put on the PATH to look right: that is how the gateway
+    /// carried `~/.hermes/python/python/bin` for ten weeks after the
+    /// interpreter moved.
+    static func pathWithMoePython(_ path: String, python: String = bundledPython) -> String {
+        let dir = (python as NSString).deletingLastPathComponent
+        guard !dir.isEmpty,
+              FileManager.default.isExecutableFile(atPath: dir + "/python3") else { return path }
+        let rest = path.split(separator: ":", omittingEmptySubsequences: true).map(String.init).filter { $0 != dir }
+        return ([dir] + rest).joined(separator: ":")
+    }
+
+    /// Real interpreters, present only when developer tools are installed.
+    static let developerPythons = [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+    ]
+
+    /// `message` is shown on a settings pane as it stands, so it is always
+    /// one of `Said`'s sentences — never the script's own output, which goes
+    /// to Moe's log (`report`).
     struct Failure: Error { let message: String }
+
+    /// What a failed run is called on screen.
+    ///
+    /// The pane used to print the last four lines the script wrote, joined
+    /// with spaces, or "configure-hermes.py exited 1." Those are written for
+    /// whoever maintains the script — flag names, `config.yaml does not
+    /// parse`, a traceback's tail — and a person choosing a model can act on
+    /// none of it. They get what happened and what to do; the log gets the
+    /// rest, whole.
+    enum Said {
+        static let missing = "A part of Moe that this needs is missing on this Mac. Quit Memoe and open it again; if this stays, download Memoe again from memoe.app."
+        static let wouldNotStart = "Moe couldn't start the part of itself that changes this. Quit Memoe and open it again."
+        static let couldNotRead = "Moe couldn't read how its thinking part is set up. Quit Memoe and open it again; if this stays, choose Set it up."
+        static let keyNotSaved = "Moe couldn't save that key, and nothing was changed. Check it is the whole key, with nothing before or after it, and try again."
+        static let profileNotUsed = "Moe couldn't switch to that browser profile, and nothing was changed. Pick another one."
+        static let notSaved = "Moe couldn't save that, and nothing was changed. Try again; if it keeps happening, quit Memoe and open it again."
+
+        /// By what was asked for. The flags are Moe's own (`apply`,
+        /// `setWorkLimit`, …), so this reads the request, not the output.
+        static func failure(of args: [String]) -> String {
+            if args.contains("--set-key") { return keyNotSaved }
+            if args.contains("--set-browse-as") { return profileNotUsed }
+            if args.contains(where: { $0.hasPrefix("--set-") || $0.hasPrefix("--install-") }) { return notSaved }
+            return couldNotRead
+        }
+    }
+
+    /// The detail, for whoever reads the log. Flags only: a value can be a
+    /// model name or a URL, and none of it is needed to find the run.
+    private static func report(_ args: [String], _ what: String) {
+        let flags = args.filter { $0.hasPrefix("--") }.joined(separator: " ")
+        Log.write("brain settings: configure-hermes.py \(flags): \(what)")
+    }
 
     /// Run the script with `args`; `secret` (if any) goes on stdin — never
     /// argv, which every local user can read with `ps`.
     static func run(_ args: [String], secret: String? = nil) -> Result<String, Failure> {
         guard let script = scriptPath() else {
-            return .failure(.init(message: "Couldn't find configure-hermes.py (expected in ~/.moe/hermes)."))
+            report(args, "not found in \(Paths.home.path)/hermes or in the app")
+            return .failure(.init(message: Said.missing))
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: python())
@@ -78,7 +177,8 @@ enum BrainSetup {
         p.standardError = err
         p.standardInput = secret == nil ? FileHandle.nullDevice : input
         do { try p.run() } catch {
-            return .failure(.init(message: "Couldn't run configure-hermes.py: \(error.localizedDescription)"))
+            report(args, "could not be started with \(python()): \(error.localizedDescription)")
+            return .failure(.init(message: Said.wouldNotStart))
         }
         if let secret {
             try? input.fileHandleForWriting.write(contentsOf: Data((secret + "\n").utf8))
@@ -92,8 +192,8 @@ enum BrainSetup {
         let stderr = String(data: errData, encoding: .utf8) ?? ""
         guard p.terminationStatus == 0 else {
             let why = (stderr + "\n" + stdout).trimmingCharacters(in: .whitespacesAndNewlines)
-            return .failure(.init(message: why.isEmpty ? "configure-hermes.py exited \(p.terminationStatus)."
-                                                       : why.split(separator: "\n").suffix(4).joined(separator: " ")))
+            report(args, "exited \(p.terminationStatus)" + (why.isEmpty ? "" : "\n" + why))
+            return .failure(.init(message: Said.failure(of: args)))
         }
         return .success(stdout)
     }
@@ -104,7 +204,10 @@ enum BrainSetup {
         case .success(let text):
             guard let line = text.split(whereSeparator: \.isNewline).last,
                   let status = try? JSONDecoder().decode(BrainStatus.self, from: Data(line.utf8))
-            else { return .failure(.init(message: "configure-hermes.py --show gave no answer.")) }
+            else {
+                report(["--show"], "exited 0 with no answer: \(text.suffix(400))")
+                return .failure(.init(message: Said.couldNotRead))
+            }
             return .success(status)
         }
     }

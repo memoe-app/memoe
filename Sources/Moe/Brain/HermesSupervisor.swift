@@ -151,6 +151,14 @@ final class HermesSupervisor {
     private var quietRetries = 0
     private var adoptedWatch: DispatchWorkItem?
     private var adoptedMisses = 0
+    /// The owned child a hang check is running against, if one is. Tied to
+    /// the process rather than a flag: a check whose answer never comes back
+    /// (its request was cancelled by an exit's own health check) cannot then
+    /// block every later one, because the next child is a different object.
+    private var hangCheckFor: Process?
+    /// A hung gateway was retired; whoever is listening is told when its
+    /// replacement answers (`onRecovered`).
+    private var announceReturn = false
     private var logHandle: FileHandle?
     private var logSize: UInt64 = 0
     private var shuttingDown = false
@@ -162,6 +170,15 @@ final class HermesSupervisor {
     var onError: ((String) -> Void)?
     /// A line for the status area. Delivered on the main queue.
     var onStatus: ((String) -> Void)?
+    /// The gateway answers again after this supervisor had said it could not
+    /// be brought up — the quiet retry worked, or a deliberate `start()` did —
+    /// or after a hung one was replaced.
+    /// Without this the recovery was known only here: the brain that was told
+    /// "failed" stayed stopped, and refused every question on a Mac whose
+    /// gateway was healthy. Delivered on the main queue.
+    var onRecovered: (() -> Void)?
+    /// A failure has been reported and nothing has answered since.
+    private var gaveUp = false
 
     /// Where the gateway stands, for HermesBrain's error messages.
     enum Standing {
@@ -189,6 +206,8 @@ final class HermesSupervisor {
     private let urlSession: URLSession
     private let healthTimeout: TimeInterval
     private let quietRetryInterval: TimeInterval
+    private let hangProbeTimeout: TimeInterval
+    private let hangProbeGap: TimeInterval
 
     static let logURL = Paths.logs.appendingPathComponent("hermes-gateway.log")
     private static let logLimit: UInt64 = 5 * 1024 * 1024
@@ -211,6 +230,18 @@ final class HermesSupervisor {
     /// After the crash ceiling, how long before the next silent attempt.
     private static let defaultQuietRetryInterval: TimeInterval = 60
     private static let stderrTailLimit = 4096
+    /// How long one "are you there?" to Moe's own gateway may take, and the
+    /// pause before asking a second time. Generous on purpose: these only
+    /// run after a turn has already gone 120 s without a byte (Hermes sends
+    /// a keepalive every 30 s, so that is four missed in a row) or the port
+    /// refused a connection, and the thing being decided is whether to kill
+    /// a process that may be an hour into somebody's research. A healthy
+    /// gateway answers `/v1/models` in milliseconds however long its turns
+    /// run; a Mac under heavy load is the case the five seconds are for.
+    private static let defaultHangProbeTimeout: TimeInterval = 5
+    private static let defaultHangProbeGap: TimeInterval = 3
+    /// Two misses in a row, the same bar an adopted gateway is held to.
+    private static let hangMisses = 2
 
     init(config: Config) {
         self.config = config
@@ -222,6 +253,11 @@ final class HermesSupervisor {
         // Debug-only test hook: a shorter wait before the silent retry.
         self.quietRetryInterval = TestHooks.env("MOE_HERMES_RETRY_INTERVAL").flatMap(Double.init)
             ?? Self.defaultQuietRetryInterval
+        // Debug-only test hooks: a quicker verdict on a hung gateway.
+        self.hangProbeTimeout = TestHooks.env("MOE_HERMES_HANG_PROBE_TIMEOUT").flatMap(Double.init)
+            ?? Self.defaultHangProbeTimeout
+        self.hangProbeGap = TestHooks.env("MOE_HERMES_HANG_PROBE_GAP").flatMap(Double.init)
+            ?? Self.defaultHangProbeGap
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 3
         cfg.waitsForConnectivity = false
@@ -282,14 +318,106 @@ final class HermesSupervisor {
         }
     }
 
-    /// HermesBrain couldn't connect. For an adopted gateway this brings the
-    /// next liveness check forward instead of waiting out the interval.
+    /// HermesBrain couldn't connect, or a turn went silent until it timed
+    /// out. For an adopted gateway this brings the next liveness check forward
+    /// instead of waiting out the interval.
+    ///
+    /// For Moe's OWN gateway it is the only liveness check there is. Until
+    /// 2026-11-12 this returned at once for an owned gateway, on the reasoning
+    /// that a child's exit is observed directly — true, and no help when the
+    /// child is alive and has stopped answering. Every turn then ended in
+    /// "Moe is taking too long to answer" after 120 s, for as long as the app
+    /// stayed open, with a supervisor that believed it was `.ready`.
+    ///
+    /// The report is evidence, not a verdict: a research turn can run for half
+    /// an hour by design, and a turn that timed out here says nothing about
+    /// the other sessions the gateway is serving. So the gateway is ASKED —
+    /// `/v1/models`, twice — and only one that answers neither is retired.
     func noteUnreachable() {
         queue.async {
-            guard case .ready(owned: false) = self.state else { return }
-            self.adoptedWatch?.cancel()
-            self.watchAdoptedLocked(delay: 0)
+            switch self.state {
+            case .ready(owned: false):
+                self.adoptedWatch?.cancel()
+                self.watchAdoptedLocked(delay: 0)
+            case .ready(owned: true):
+                guard let p = self.process, self.hangCheckFor !== p else { return }
+                self.hangCheckFor = p
+                self.checkOwnedForHangLocked(p, misses: 0)
+            default:
+                return
+            }
         }
+    }
+
+    /// Is Moe's own gateway still answering? One that is gets left alone,
+    /// however slow the turn that raised the question. One that misses twice
+    /// is hung: retired, and a fresh one started in its place.
+    private func checkOwnedForHangLocked(_ p: Process, misses: Int) {
+        guard process === p, !shuttingDown, case .ready(owned: true) = state else {
+            if hangCheckFor === p { hangCheckFor = nil }
+            return
+        }
+        checkHealth(timeout: hangProbeTimeout) { [self] verdict in
+            guard process === p, case .ready(owned: true) = state else {
+                if hangCheckFor === p { hangCheckFor = nil }
+                return
+            }
+            switch verdict {
+            case .hermes:
+                hangCheckFor = nil
+                Log.write("hermes gateway: a turn got no answer, but the gateway answers on port "
+                          + "\(port) — slow, not hung; leaving it alone")
+            case .foreign(let status):
+                // Something else answers on the port while our child lives.
+                // Restarting ours would not move it; say so and stop.
+                hangCheckFor = nil
+                Log.write("hermes gateway: a turn got no answer, and port \(port) answered HTTP "
+                          + "\(status) — not a gateway; leaving Moe's own as it is")
+            case .down:
+                let missed = misses + 1
+                guard missed >= Self.hangMisses else {
+                    queue.asyncAfter(deadline: .now() + hangProbeGap) { [weak self] in
+                        self?.checkOwnedForHangLocked(p, misses: missed)
+                    }
+                    return
+                }
+                hangCheckFor = nil
+                retireHungLocked(misses: missed)
+            }
+        }
+    }
+
+    /// Moe's own gateway is running and answers nothing. Replace it.
+    ///
+    /// Counted against the same budget as a crash, so a gateway that hangs
+    /// again and again reaches the same ceiling and the same quiet retry — a
+    /// hang cannot become a respawn loop. And each one costs a failed turn
+    /// plus two unanswered checks first, so the rate is bounded from the
+    /// other side by how often anybody asks.
+    private func retireHungLocked(misses: Int) {
+        let who = gatewayPID > 0 ? "pid \(gatewayPID)" : "wrapper \(process?.processIdentifier ?? 0)"
+        let now = Date()
+        crashes = crashes.filter { now.timeIntervalSince($0) < Self.crashWindow }
+        crashes.append(now)
+        let leaving = process
+        guard crashes.count <= Self.maxCrashes else {
+            Log.write("hermes gateway: \(who) is running but stopped answering on port \(port) "
+                      + "(\(misses) checks) — and that is too many times; retiring it")
+            retireCurrentLocked()
+            failLocked("The part of Moe that thinks kept stopping. Moe will keep trying "
+                       + "quietly; New Conversation tries again right now.")
+            scheduleQuietRetryLocked()
+            return
+        }
+        Log.write("hermes gateway: \(who) is running but stopped answering on port \(port) "
+                  + "(\(misses) checks) — hung; replacing it (attempt \(crashes.count) of \(Self.maxCrashes))")
+        DispatchQueue.main.async { self.onStatus?("Restarting the part of Moe that thinks") }
+        announceReturn = true
+        retireCurrentLocked()
+        // As a reload does it: wait for the retired child to be gone, and
+        // never adopt it if it is not — see `bringUpAfterLocked`.
+        state = .restarting
+        bringUpAfterLocked(leaving)
     }
 
     /// Replace the running gateway with a fresh one, because a file it reads
@@ -523,6 +651,11 @@ final class HermesSupervisor {
         }
         let pending = waiters; waiters = []
         for w in pending { w(.success(())) }
+        if gaveUp || announceReturn {
+            gaveUp = false
+            announceReturn = false
+            DispatchQueue.main.async { self.onRecovered?() }
+        }
         if owned {
             // Stable for a minute: forget earlier crashes.
             let p = process
@@ -542,6 +675,7 @@ final class HermesSupervisor {
     /// having what it needs, must not sit here unannounced.
     private func failLocked(_ message: String) {
         state = .failed(message)
+        gaveUp = true
         Log.write("hermes gateway: \(message)")
         let pending = waiters; waiters = []
         for w in pending { w(.failure(Failure(message: message))) }
@@ -1081,8 +1215,14 @@ final class HermesSupervisor {
         // MOE_RUNS_IN with the platform rather than trusting it.
         var env = BrainPrompt.childEnvironment()
         let home = NSHomeDirectory()
-        env["PATH"] = ["\(home)/.hermes/bin", "\(home)/.hermes/python/python/bin", "\(home)/.hermes/node/bin"]
-            .joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        // Moe's own Python comes second, as it was always meant to: this list
+        // named `~/.hermes/python/python/bin` from 2026-08-29, and nothing has
+        // been at that path since the interpreter moved under `tools/` and
+        // the venv. So `python3` in the gateway's children — both hooks, and
+        // the skills that say `python3 …/moe-ticket.py` — has been whichever
+        // Python the Mac had, or the developer-tools stub.
+        env["PATH"] = "\(home)/.hermes/bin:" + BrainSetup.pathWithMoePython(
+            "\(home)/.hermes/node/bin:" + (env["PATH"] ?? "/usr/bin:/bin"))
         // A local content filter / proxy on this Mac intercepts HTTP and breaks
         // Hermes's client (its TLS and its loopback calls both go wrong).
         // Hermes talks to loopback and to provider APIs that it must reach

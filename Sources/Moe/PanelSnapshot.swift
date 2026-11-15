@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import MoeBrain
+import MoeIsland
 import MoeMeeting
 import SwiftUI
 
@@ -77,11 +78,21 @@ enum PanelSnapshot {
         var failed = 0
         for shot in shots where only.map({ shot.name.hasPrefix($0) }) ?? true {
             conductor.pose(shot.state)
-            let content = island.snapshotContentSize(for: shot.presentation, notch: shot.notch,
-                                                     accessibility: shot.accessibility)
-            let view = frame(shot: shot, content: content, conductor: conductor)
+            let content: CGSize
+            let view: AnyView
+            var canvas = screen
+            if let size = shot.window {
+                content = size
+                canvas = CGSize(width: max(screen.width, size.width + 260), height: max(screen.height, size.height + 120))
+                view = AnyView(floatingFrame(shot: shot, size: size, canvas: canvas, conductor: conductor))
+            } else {
+                content = island.snapshotContentSize(for: shot.presentation, notch: shot.notch,
+                                                     accessibility: shot.accessibility,
+                                                     trayOpen: shot.trayOpen)
+                view = AnyView(frame(shot: shot, content: content, conductor: conductor))
+            }
             let path = (directory as NSString).appendingPathComponent("\(shot.name).png")
-            if write(view, to: path, appearance: shot.light ? .aqua : .darkAqua) {
+            if write(view, to: path, appearance: shot.light ? .aqua : .darkAqua, canvas: canvas) {
                 written += 1
                 print("\(shot.name).png  \(shot.presentation)  \(Int(content.width))×\(Int(content.height))pt  — \(shot.note)")
             } else {
@@ -111,7 +122,32 @@ enum PanelSnapshot {
         /// The Mac it is taken on. Most shots use the stand-in; the machine
         /// shots (30–) take each real cutout in turn.
         var notch: CGSize = PanelSnapshot.notch
+        /// A floating camera capsule inside `notch` (which is then only the
+        /// box macOS reports). Nil is every Mac before it.
+        var capsule: NotchGeometry.CapsuleCutout?
+        /// Trace the hardware capsule in magenta over the shot, so whether
+        /// the island sits on it can be seen: black on black shows nothing.
+        var outlineHardware = false
+        /// macOS's own microphone indicator beside a capsule
+        /// (`NotchGeometry.SystemIndicator`), drawn over the island because
+        /// that is where the system draws it.
+        var system: SystemPose = .auto
+        /// The chat out of the notch, in its window at this size
+        /// (`FloatingChatWindow`). Nil is the notch.
+        var window: CGSize?
         var state: Conductor.SnapshotState
+    }
+
+    enum SystemPose {
+        /// The pill whenever the posed state has Memoe's own microphone
+        /// open, nothing otherwise: the worst case for every such state.
+        case auto
+        /// No app has the microphone.
+        case none
+        /// The microphone is open and the indicator is at rest: its dot.
+        case dot
+        /// The microphone has just opened, or the pointer is near: the pill.
+        case pill
     }
 
     /// The island in its window, over the stand-in call, on the stand-in
@@ -121,21 +157,34 @@ enum PanelSnapshot {
     private static func frame(shot: Shot, content: CGSize, conductor: Conductor) -> some View {
         let windowWidth: CGFloat = 460 + 120 * 2
         let windowHeight: CGFloat = shot.notch.height + 420 + 120
+        let system: SystemPose = shot.capsule == nil ? .none
+            : shot.system == .auto ? (IslandView.usesMicrophone(conductor) ? .pill : .none)
+            : shot.system
 
         return ZStack(alignment: .top) {
             // A Mac without a notch still has a menu bar: 25 pt, drawn so the
             // panel can be seen covering it.
             CallBackdrop(light: shot.light, menuBar: shot.notch.height > 0 ? shot.notch.height : 25)
             // The notch: a hole in the glass, drawn as the black it is.
-            NotchCutout(size: shot.notch)
+            if shot.capsule == nil { NotchCutout(size: shot.notch) }
             IslandView(conductor: conductor,
                        presentation: shot.presentation,
                        notchSize: shot.notch,
+                       capsule: shot.capsule,
+                       micOpenSomewhere: system != .none,
                        contentSize: content,
                        draft: draft(for: shot),
                        takesFocus: false,
                        onTap: {}, onHover: { _ in }, onClose: {})
                 .frame(width: windowWidth, height: windowHeight, alignment: .top)
+            // A floating capsule is glass, not pixels: whatever the island
+            // draws there is not seen, so it goes on top of everything.
+            if let capsule = shot.capsule {
+                CapsuleHardware(capsule: capsule, outlined: shot.outlineHardware)
+                if system != .none {
+                    SystemMicIndicator(indicator: capsule.indicator, pill: system == .pill)
+                }
+            }
         }
         .frame(width: screen.width, height: screen.height, alignment: .top)
         .environment(\.islandSnapshot, shot.accommodations)
@@ -151,13 +200,14 @@ enum PanelSnapshot {
     private static func draft(for shot: Shot) -> IslandDraft {
         let d = IslandDraft()
         if shot.name.contains("half-typed") { d.text = "what did she say the deadline was" }
+        d.trayOpen = shot.trayOpen
         return d
     }
 
     // MARK: - Writing
 
     private static func write(_ view: some View, to path: String,
-                              appearance: NSAppearance.Name) -> Bool {
+                              appearance: NSAppearance.Name, canvas: CGSize = screen) -> Bool {
         // The island is drawn by SwiftUI, but the AppKit controls inside it
         // (`Toggle(.checkbox)` on the notes panel) follow the *app's*
         // appearance, not the environment's — which is exactly §8's
@@ -170,7 +220,7 @@ enum PanelSnapshot {
         renderer.scale = 2
         guard let cg = renderer.cgImage else { return false }
         let rep = NSBitmapImageRep(cgImage: cg)
-        rep.size = NSSize(width: screen.width, height: screen.height)
+        rep.size = NSSize(width: canvas.width, height: canvas.height)
         guard let data = rep.representation(using: .png, properties: [:]) else { return false }
         return (try? data.write(to: URL(fileURLWithPath: path))) != nil
     }
@@ -601,7 +651,7 @@ enum PanelSnapshot {
                      return s
                  }()),
 
-        ] + inboxShots + machineShots + islandShots + [
+        ] + inboxShots + machineShots + islandShots + capsuleShots + floatingShots + chatStateShots + [
             Shot(name: "99-control-no-accommodations",
                  note: "the same shot as 05 with §9's two accommodations off — this is why they exist",
                  accommodations: false,
@@ -669,6 +719,282 @@ enum PanelSnapshot {
         return notched + bare + [open]
     }
 
+    // MARK: - Every conversation state (`ChatPoses`, 2026-11-13)
+
+    /// The notch card, opened, and the floating window, in every state
+    /// `ChatPoses` lists: the same poses the Chat page is photographed in
+    /// (`--settings-snapshot … main-chat-window`). `x` draws just these.
+    private static var chatStateShots: [Shot] {
+        ChatPoses.all.flatMap { pose in
+            [Shot(name: "x-\(pose.name)", note: "notch card: \(pose.note)", state: pose.state),
+             Shot(name: "xw-\(pose.name)", note: "floating window: \(pose.note)",
+                  window: FloatingChatFrame.initialSize, state: pose.state)]
+        }
+    }
+
+    // MARK: - The chat out of the notch (`FloatingChatWindow`, 2026-11-13)
+
+    /// The notch card with its pop-out, on each kind of Mac; then the window
+    /// itself, small, default and large, light and dark, in the states that
+    /// change what is in it. `Moe --panel-snapshot <dir> f` draws just these.
+    private static var floatingShots: [Shot] {
+        let conversation = [
+            Turn(role: .you, text: "What's on today?"),
+            Turn(role: .moe, text: "Agent onboarding at 11:30, the daily call at 1, and a 3 o'clock. Two cancellation reminders are overdue."),
+            Turn(role: .you, text: "Move the 3 o'clock to tomorrow and tell them why"),
+            Turn(role: .moe, text: "Done. I moved it to 3 tomorrow and sent this:\n\n> Hi Sam, something came up this afternoon. I've moved us to the same time tomorrow; I hope that still works."),
+        ]
+        func pose(_ f: (inout Conductor.SnapshotState) -> Void) -> Conductor.SnapshotState {
+            var s = inbox(turns: conversation)
+            f(&s)
+            return s
+        }
+        let small = CGSize(width: 320, height: 300)
+        let standard = FloatingChatFrame.initialSize
+        let large = CGSize(width: 760, height: 820)
+        return [
+            Shot(name: "f01-notch-card-pop-out",
+                 note: "the notch card on a 14-inch: inbox, new conversation, then the pop-out beside the fold",
+                 notch: CGSize(width: 185, height: 32), state: inbox()),
+            Shot(name: "f02-capsule-card-pop-out",
+                 note: "the same card on a floating capsule (the owner's Mac)",
+                 notch: capsuleBox, capsule: capsule, state: inbox()),
+            Shot(name: "f03-pro-16-card-pop-out",
+                 note: "a 16-inch's narrow band: the pop-out stays, a new conversation gives way",
+                 notch: CGSize(width: 220, height: 38), state: inbox()),
+            Shot(name: "f04-no-notch-card-pop-out",
+                 note: "no notch: the header has a row of its own",
+                 notch: .zero, state: inbox()),
+            Shot(name: "f05-notch-card-working",
+                 note: "mid-job: the clock, then the pop-out",
+                 state: working(silently: false)),
+            Shot(name: "f06-notch-at-rest-while-out",
+                 note: "the chat is out: the notch at rest draws nothing past the camera",
+                 presentation: .collapsed, state: inbox()),
+            Shot(name: "f10-window-default-dark",
+                 note: "the window, first time out: 420 × 540, a dark desktop",
+                 window: standard, state: pose { _ in }),
+            Shot(name: "f11-window-default-light",
+                 note: "the same over a light desktop: the card is the notch card's black in both",
+                 light: true, window: standard, state: pose { _ in }),
+            Shot(name: "f12-window-small-dark",
+                 note: "small, 320 × 300: the conversation scrolls, the field and the tray stay",
+                 window: small, state: pose { _ in }),
+            Shot(name: "f13-window-small-light",
+                 note: "the smallest over a light desktop",
+                 light: true, window: small, state: pose { _ in }),
+            Shot(name: "f14-window-large-dark",
+                 note: "widened to 760 × 820: bubbles widen with it",
+                 window: large, state: pose { _ in }),
+            Shot(name: "f15-window-large-light",
+                 note: "large, light desktop",
+                 light: true, window: large, state: pose { _ in }),
+            Shot(name: "f16-window-working",
+                 note: "Moe working: Working and the clock in the header, the step, Stop in the tray",
+                 window: standard, state: working(silently: false)),
+            Shot(name: "f17-window-speaking-tray-open",
+                 note: "speaking, the ⋯ open: the same tray as the notch card",
+                 trayOpen: true, window: standard,
+                 state: pose { $0.mode = .speaking; $0.inConversation = true; $0.voicedTurn = 3 }),
+            Shot(name: "f18-window-muted",
+                 note: "muted: the Unmute pill stays in view",
+                 window: standard,
+                 state: pose { $0.mode = .listening; $0.inConversation = true; $0.micMuted = true }),
+            Shot(name: "f19-window-inbox",
+                 note: "the inbox in the window",
+                 window: standard, state: inbox(open: true)),
+            Shot(name: "f20-window-cold-start",
+                 note: "nothing said yet: the greeting and the field",
+                 window: standard, state: Conductor.SnapshotState()),
+            Shot(name: "f21-window-half-typed",
+                 note: "a half-typed question: the same draft the notch holds",
+                 window: small, state: pose { _ in }),
+            Shot(name: "f22-window-long-answer",
+                 note: "a long answer: scrolls inside the window",
+                 window: standard, state: inbox(turns: longAnswer)),
+        ]
+    }
+
+    /// The chat window over a stand-in desktop, with the folded notch at
+    /// the top — which, while the chat is out, is only ever the notch.
+    /// The window's own corners and shadow are the system's in the app;
+    /// they are drawn here so the picture reads as a window.
+    private static func floatingFrame(shot: Shot, size: CGSize, canvas: CGSize,
+                                      conductor: Conductor) -> some View {
+        var chrome = FloatingChrome()
+        chrome.keepOnTop = true
+        let window = IslandView(conductor: conductor, presentation: .expanded, notchSize: .zero,
+                                contentSize: size, draft: draft(for: shot), takesFocus: false,
+                                onTap: {}, onHover: { _ in }, floating: chrome)
+        return ZStack(alignment: .topTrailing) {
+            CallBackdrop(light: shot.light, menuBar: notch.height)
+            NotchCutout(size: notch)
+                .frame(maxWidth: .infinity, alignment: .center)
+            window
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+                .padding(.top, notch.height + 24)
+                .padding(.trailing, 40)
+        }
+        .frame(width: canvas.width, height: canvas.height, alignment: .top)
+        .environment(\.islandSnapshot, shot.accommodations)
+        .environment(\.islandPosedTrayOpen, shot.trayOpen)
+        .environment(\.colorScheme, shot.light ? .light : .dark)
+    }
+
+    // MARK: - The floating capsule (2026-11-12, `CapsuleIsland`)
+
+    /// What macOS reports for the owner's MacBook Pro (Mac17,13, 1512 × 993
+    /// pt, measured 2026-11-12): `safeAreaInsets.top` 40 and two 726.5 pt
+    /// strips, so a 59 × 40 pt box. The capsule inside it is 58 × 31 pt,
+    /// 8.5 pt down — `NotchGeometry.measuredCapsules`.
+    static let capsuleBox = CGSize(width: 59, height: 40)
+    static let capsule = NotchGeometry.capsule(reported: capsuleBox, model: "Mac17,13")
+
+    /// The island on a floating capsule: every folded state, the open card
+    /// with several things in it, and the four states of the approved design
+    /// again with the hardware traced. `Moe --panel-snapshot <dir> c` draws
+    /// just these.
+    private static var capsuleShots: [Shot] {
+        func pose(_ f: (inout Conductor.SnapshotState) -> Void) -> Conductor.SnapshotState {
+            var s = Conductor.SnapshotState()
+            f(&s)
+            return s
+        }
+        let conversation = [Turn(role: .you, text: "What's on today?"),
+                            Turn(role: .moe, text: "Agent onboarding at 11:30, the daily call at 1, and a 3 o'clock. Two cancellation reminders are overdue.")]
+        let folded: [(String, String, Conductor.SnapshotState)] = [
+            ("rest", "at rest: the hardware's capsule and nothing else; the strip above stays lit", pose { _ in }),
+            ("listening", "listening: the capsule grows sideways, bars left of the camera, the dot right",
+             pose { $0.mode = .listening; $0.inConversation = true; $0.level = 0.7 }),
+            ("working", "working: the ring left of the camera, the word right",
+             pose { $0.mode = .thinking; $0.working = true; $0.acting = true }),
+            ("speaking", "speaking: the bars, and the dot",
+             pose { $0.mode = .speaking; $0.inConversation = true }),
+            ("muted", "muted: the word left of the camera",
+             pose { $0.mode = .listening; $0.inConversation = true; $0.micMuted = true; $0.level = 0.9 }),
+            ("notice", "something arrived: the capsule grows right to hold its line", inbox(peek: true)),
+            ("waiting", "something waiting, at rest: the hardware's capsule and nothing else (the card says it)", inbox()),
+            ("driving", "Moe has the screen: the ring left, \"Using Safari · Stop\" right",
+             pose { $0.mode = .thinking; $0.acting = true; $0.working = true; $0.drivingApp = "Safari" }),
+            ("dictation", "dictating: a text cursor and the bars",
+             pose { $0.dictation = .listening; $0.level = 0.6 }),
+            ("meeting-actions", "Recording left of the camera, the action items right", recording(actions: 2)),
+            ("between-turns", "a conversation open between turns, nobody speaking: rest, nothing out",
+             pose { $0.mode = .listening; $0.inConversation = true; $0.betweenTurns = true }),
+        ]
+        let open: [(String, String, NotchIsland.Presentation, Conductor.SnapshotState)] = [
+            ("open", "opened: a floating card from the capsule's top edge, the camera in its top band",
+             .expanded, pose { $0.turns = conversation }),
+            ("open-hover", "the hover panel, the same card at 420 pt", .peek, pose { $0.turns = conversation }),
+            ("open-working", "opened while Moe works: the word and the clock beside the camera",
+             .expanded, working(silently: false)),
+            ("open-inbox", "the inbox in the card", .expanded, inbox(open: true)),
+            ("open-meeting", "a meeting with a transcript and a reply", .expanded,
+             recording(timeline: sampleTimeline, turns: sampleTurns)),
+            ("open-notes", "notes ready", .expanded, notesReady(short: true)),
+            ("open-dictation", "the dictation strip on hover", .peek,
+             pose { $0.dictation = .listening; $0.level = 0.6 }),
+        ]
+        var shots: [Shot] = []
+        for (i, st) in folded.enumerated() {
+            shots.append(Shot(name: String(format: "c%02d-capsule-%@", i + 1, st.0), note: st.1,
+                              presentation: .collapsed, notch: capsuleBox, capsule: capsule, state: st.2))
+        }
+        for (i, st) in open.enumerated() {
+            shots.append(Shot(name: String(format: "c%02d-capsule-%@", i + 20, st.0), note: st.1,
+                              presentation: st.2, notch: capsuleBox, capsule: capsule, state: st.3))
+        }
+        // The same over a bright call and a light menu bar.
+        shots.append(Shot(name: "c30-capsule-listening-light", note: "listening over a light menu bar",
+                          presentation: .collapsed, light: true, notch: capsuleBox, capsule: capsule,
+                          state: folded[1].2))
+        shots.append(Shot(name: "c31-capsule-open-light", note: "the open card over a light menu bar",
+                          light: true, notch: capsuleBox, capsule: capsule, state: open[0].3))
+        // The approved design's four states with the hardware traced.
+        for (name, presentation, state) in [("rest", NotchIsland.Presentation.collapsed, folded[0].2),
+                                            ("listening", .collapsed, folded[1].2),
+                                            ("working", .collapsed, folded[2].2),
+                                            ("open", .expanded, open[0].3)] {
+            shots.append(Shot(name: "c4-capsule-\(name)-outlined",
+                              note: "\(name), with the real capsule traced in magenta",
+                              presentation: presentation, light: true, notch: capsuleBox, capsule: capsule,
+                              outlineHardware: true, state: state))
+        }
+        // macOS's microphone indicator (found 2026-11-12, the owner's
+        // photographs): the states above that have no microphone of
+        // Memoe's own, with another app's — or the wake word's — open, the
+        // indicator both as its pill and as its resting dot; and the card
+        // in the state that was photographed.
+        let thinking = pose { $0.mode = .thinking }
+        let system: [(String, String, NotchIsland.Presentation, SystemPose, Conductor.SnapshotState)] = [
+            ("working-mic-pill", "working with the microphone open: ring and word either side of the system's pill",
+             .collapsed, .pill, folded[2].2),
+            ("working-mic-dot", "the same with the system's indicator at rest", .collapsed, .dot, folded[2].2),
+            ("thinking-mic-pill", "the photographed state: thinking, the pill out", .collapsed, .pill, thinking),
+            ("listening-mic-dot", "listening, the indicator at rest", .collapsed, .dot, folded[1].2),
+            ("notice-mic-pill", "a notice while the microphone is open", .collapsed, .pill, folded[5].2),
+            ("waiting-mic-dot", "something waiting, the wake word listening: nothing out (IMG_0629)", .collapsed, .dot, folded[6].2),
+            ("driving-mic-pill", "driving while the microphone is open", .collapsed, .pill, folded[7].2),
+            ("rest-mic-pill", "at rest with the pill out: the island adds nothing", .collapsed, .pill, folded[0].2),
+            ("rest-mic-dot", "at rest, the wake word listening", .collapsed, .dot, folded[0].2),
+            ("open-thinking-mic-pill", "the photographed card: thinking, nothing said yet, the pill out",
+             .peek, .pill, thinking),
+            ("open-thinking-quiet", "the same with no microphone open", .peek, .none, thinking),
+            ("open-working-mic-pill", "opened while Moe works, the pill out", .expanded, .pill, open[2].3),
+            ("open-mic-pill", "the open card with the pill out", .expanded, .pill, open[0].3),
+            ("open-inbox-mic-dot", "the inbox, the indicator at rest", .expanded, .dot, open[3].3),
+            ("open-driving-mic-pill", "a long status word stays on its side of the pill", .peek, .pill,
+             pose { $0.mode = .thinking; $0.acting = true; $0.working = true; $0.drivingApp = "Google Chrome Canary" }),
+            ("waiting-mic-pill", "something waiting with the pill out: only the system's pill (IMG_0630)",
+             .collapsed, .pill, folded[6].2),
+            ("between-turns-mic-dot", "between turns, the indicator at rest: nothing out", .collapsed, .dot,
+             folded[10].2),
+            ("listening-waiting-mic-dot", "somebody speaking with something waiting: bars left, the white dot right",
+             .collapsed, .dot, { var s = folded[6].2; s.mode = .listening; s.inConversation = true; s.level = 0.7; return s }()),
+        ]
+        for (i, st) in system.enumerated() {
+            shots.append(Shot(name: String(format: "c%02d-capsule-%@", i + 60, st.0), note: st.1,
+                              presentation: st.2, notch: capsuleBox, capsule: capsule, system: st.3, state: st.4))
+        }
+        // The compact card (`IslandView.trayInHeader`): working with nothing
+        // in the conversation. The ⋯ is in the band; its controls take a
+        // row only while out. Then the same state on a notch and with no
+        // cutout, where the "Thinking" row is still drawn and nothing moved.
+        var clocked = working(silently: false)
+        clocked.turns = []
+        let talking = pose { $0.mode = .thinking; $0.inConversation = true }
+        shots.append(Shot(name: "c80-capsule-compact-thinking", note: "thinking, nothing said: band, then the field",
+                          presentation: .peek, notch: capsuleBox, capsule: capsule, system: .pill, state: thinking))
+        shots.append(Shot(name: "c81-capsule-compact-clock", note: "the same with the clock running",
+                          presentation: .peek, notch: capsuleBox, capsule: capsule, system: .pill, state: clocked))
+        shots.append(Shot(name: "c82-capsule-compact-tray-open", note: "its ⋯ pressed: the controls take a row",
+                          presentation: .peek, trayOpen: true, notch: capsuleBox, capsule: capsule,
+                          system: .pill, state: talking))
+        shots.append(Shot(name: "c83-capsule-compact-quiet", note: "the compact card with no microphone open",
+                          presentation: .peek, notch: capsuleBox, capsule: capsule, system: .none, state: clocked))
+        shots.append(Shot(name: "c84-notch-thinking-nothing-said", note: "the same state under a notch: unchanged",
+                          presentation: .peek, state: thinking))
+        shots.append(Shot(name: "c85-no-notch-thinking-nothing-said", note: "and with no cutout: unchanged",
+                          presentation: .peek, notch: .zero, state: thinking))
+        // A scaled resolution on a capsule Mac nobody has measured: the box
+        // is ESTIMATED (the measured box at 1512 pt, scaled to 1800 pt wide,
+        // "More Space") and the capsule inside it is the fallback's.
+        let scaledBox = CGSize(width: 50, height: 34)
+        let scaled = NotchGeometry.capsule(reported: scaledBox, model: nil)
+        shots.append(Shot(name: "c50-capsule-unmeasured-scaled-listening",
+                          note: "an unmeasured capsule Mac at a scaled resolution (estimated 50×34 box): listening",
+                          presentation: .collapsed, notch: scaledBox, capsule: scaled,
+                          outlineHardware: true, state: folded[1].2))
+        shots.append(Shot(name: "c51-capsule-unmeasured-scaled-open",
+                          note: "the same, opened",
+                          notch: scaledBox, capsule: scaled, outlineHardware: true, state: open[0].3))
+        return shots
+    }
+
     // MARK: - The inbox (docs/INBOX.md)
 
     private static func inbox(open: Bool = false, peek: Bool = false, empty: Bool = false,
@@ -682,6 +1008,11 @@ enum PanelSnapshot {
         return s
     }
 
+    private static let longAnswer: [Turn] = [
+        Turn(role: .you, text: "Walk me through what changed in the launch plan this week"),
+        Turn(role: .moe, text: (1...14).map { "Point \($0): the launch plan moved this item, and the reason is written out in full so the answer runs long enough to need more room than the hover panel has." }.joined(separator: " ")),
+    ]
+
     private static var inboxShots: [Shot] {
         [
             Shot(name: "40-inbox-arrives",
@@ -694,6 +1025,21 @@ enum PanelSnapshot {
             Shot(name: "42-inbox-open",
                  note: "the inbox in the chat's place: Needs you, then For your information, each kind's buttons",
                  state: inbox(open: true)),
+            Shot(name: "42b-inbox-open-while-working",
+                 note: "the inbox open mid-job: the clock has the corner, and ‹ Chat in the header is still the way back",
+                 state: {
+                     var s = inbox(open: true)
+                     s.mode = .thinking; s.working = true
+                     s.workingSince = Date(timeIntervalSinceNow: -42)
+                     return s
+                 }()),
+            Shot(name: "42c-long-answer-hover",
+                 note: "a long answer on hover: the panel at its hover height (a snapshot draws a scroll box from its end; where the live one rests is checked in the app)",
+                 presentation: .peek,
+                 state: inbox(turns: longAnswer)),
+            Shot(name: "42d-long-answer-open",
+                 note: "the same answer clicked open: 200 pt taller, all of it given to the conversation",
+                 state: inbox(turns: longAnswer)),
             Shot(name: "43-inbox-snooze",
                  note: "Snooze on the reminder: the choices in the row",
                  state: inbox(open: true)),
@@ -984,6 +1330,60 @@ private struct NotchCutout: View {
                                bottomTrailingRadius: 9, topTrailingRadius: 0)
             .fill(Color.black)
             .frame(width: size.width, height: size.height)
+    }
+}
+
+/// A floating camera capsule: black glass with a lens in it, 8.5 pt below the
+/// top of the screen on the Mac it was measured on. Drawn over the island,
+/// because that is where the hardware is.
+private struct CapsuleHardware: View {
+    let capsule: NotchGeometry.CapsuleCutout
+    var outlined = false
+
+    var body: some View {
+        ZStack {
+            Capsule(style: .circular).fill(Color.black)
+            Circle().fill(Color(red: 0.11, green: 0.13, blue: 0.19)).frame(width: 5, height: 5)
+            if outlined {
+                Capsule(style: .circular).strokeBorder(Color(red: 1, green: 0.2, blue: 0.7), lineWidth: 0.75)
+            }
+        }
+        .frame(width: capsule.size.width, height: capsule.size.height)
+        .offset(y: capsule.topGap)
+        .allowsHitTesting(false)
+    }
+}
+
+/// macOS's microphone indicator beside a floating capsule, as photographed
+/// on the owner's Mac (`NotchGeometry.SystemIndicator`): an orange dot right
+/// of the camera, or an outlined pill round the camera with the dot and an
+/// orange microphone in its right end. Drawn last, over the island, because
+/// the system draws it over every window.
+private struct SystemMicIndicator: View {
+    let indicator: NotchGeometry.SystemIndicator
+    let pill: Bool
+
+    private static let orange = Color(red: 1, green: 0.62, blue: 0.04)
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            if pill {
+                Capsule(style: .circular).fill(Color.black)
+                    .overlay(Capsule(style: .circular).strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
+                    .frame(width: indicator.pill.width, height: indicator.pill.height)
+                    .offset(x: indicator.pill.midX, y: indicator.pill.minY)
+                // 21 pt right of the dot in the photograph.
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Self.orange)
+                    .frame(width: 14, height: 16)
+                    .offset(x: indicator.dot.x + 21, y: indicator.dot.y - 8)
+            }
+            Circle().fill(Self.orange)
+                .frame(width: 5, height: 5)
+                .offset(x: indicator.dot.x, y: indicator.dot.y - 2.5)
+        }
+        .allowsHitTesting(false)
     }
 }
 #endif

@@ -19,12 +19,24 @@ import Foundation
 /// against a throwaway Chrome for Testing: off → disconnected, on →
 /// connected, both within 7 s).
 enum ChromeExtension {
-    /// Fixed by the `key` in the extension's manifest.
+    /// The unpacked dev build's id, fixed by the `key` in the fork's manifest.
     static let extensionID = "ljblhmlmgflmbffbfelamefleikodmjh"
+    /// The Chrome Web Store item's id — the build people install. The store
+    /// assigns its own (the packager strips `key`), so it differs from the dev id.
+    static let storeID = "nmdhnfjfpipnjbfbiligpbdnpfdkojjn"
+    /// Every id the host must let in and the row recognises: store first.
+    static let ids = [storeID, extensionID]
 
-    /// The unlisted Chrome Web Store listing. **Nil until it is live**; set it
-    /// and Set up opens the listing instead of staging an unpacked folder.
-    static let storeURL: URL? = nil
+    static func origin(_ id: String) -> String { "chrome-extension://\(id)/" }
+    /// The id in `chrome-extension://<id>/` when it is one of ours, else nil.
+    static func id(fromOrigin origin: String) -> String? {
+        let trimmed = origin.hasSuffix("/") ? String(origin.dropLast()) : origin
+        return ids.first { "chrome-extension://\($0)" == trimmed }
+    }
+
+    /// The unlisted Chrome Web Store listing (live since 2026-11-12). Add to
+    /// Chrome opens it instead of walking the person through Load unpacked.
+    static let storeURL: URL? = URL(string: "https://chromewebstore.google.com/detail/\(storeID)")
 
     /// Where Load unpacked is pointed: Moe's own home, copied from the
     /// installed Hermes on every Set up so it matches the pinned lane.
@@ -67,6 +79,21 @@ enum ChromeExtension {
             "Click Load unpacked.",
             "Pick the chrome-extension folder (Show folder opens it in Finder).",
         ]
+        /// With the store listing: what to do on the page Add to Chrome opened.
+        static let storeSteps = [
+            "On the Chrome Web Store page that opened, click Add to Chrome.",
+            "Click Add extension when Chrome asks. This row turns green by itself.",
+        ]
+        static let storeFallback = "If the store page didn't open in Chrome, click Add to Chrome again."
+        static let waitingChromeClosed = "The extension is in your Chrome. Open Chrome and Moe connects by itself."
+        static let waitingChromeOpen = "Chrome is open, but the extension hasn't connected. If you use more than one Chrome profile, it may be in one that isn't open: open that profile, or add Memoe to the one you use."
+        static let hostMissing = "The extension is in your Chrome, but Memoe's link for Chrome isn't set up on this Mac, so the two can't reach each other. Click Repair."
+        static let hostOutdated = "Memoe's link for Chrome doesn't let this copy of the extension in. Click Repair, then reopen Chrome."
+        static let hostBroken = "Memoe's link for Chrome points at a file that is gone. Click Repair."
+        static func wrongProfile(_ names: [String]) -> String {
+            let list = names.map { "“\($0)”" }.joined(separator: ", ")
+            return "Memoe is in your Chrome profile \(list), which isn't open. Open that profile in Chrome, or add Memoe to the one you use."
+        }
         static let pageFallback = "If the Extensions page didn't open, type chrome://extensions into Chrome's address bar."
         static let offNote = "Off: Moe won't use your Chrome. The extension stays in Chrome until you remove it there — Chrome › Extensions › Memoe › Remove."
         static let noChrome = "Install Google Chrome first — Moe works in your Chrome through an extension, and this Mac has no Chrome to add it to."
@@ -83,13 +110,19 @@ struct ChromeLaneReport: Decodable, Equatable, Sendable {
     let hostInstalled: Bool
     let enabled: Bool
     let connected: Bool
+    struct Extension: Decodable, Equatable, Sendable {
+        let extensionId: String?
+        let version: String?
+    }
     let warnings: [Warning]
     let error: String?
     /// The pinned Hermes's `extensions/chrome`, which the staged copy must match.
     let source: String?
+    /// What the connected extension said in its hello: which build it is.
+    var `extension`: Extension? = nil
 
     enum CodingKeys: String, CodingKey {
-        case hostInstalled = "host_installed", enabled, connected, warnings, error, source
+        case hostInstalled = "host_installed", enabled, connected, warnings, error, source, `extension`
     }
 
     static func parse(_ stdout: String) -> ChromeLaneReport? {
@@ -100,22 +133,34 @@ struct ChromeLaneReport: Decodable, Equatable, Sendable {
 
 /// The row's one word, and what the detail offers.
 enum ChromeLaneState: Equatable, Sendable {
-    /// No host, or no staged folder: Set up.
+    /// Nothing says the extension is in this Chrome: Add to Chrome.
     case notInstalled
     /// Set up, then turned off here.
     case off
-    /// Set up and on, and the extension has not said hello: the steps.
+    /// Installed and on, the host is right, and it has not connected yet:
+    /// Chrome is closed, or the profile it is in is not the open one.
     case waiting
+    /// Installed, but Memoe's host manifest is missing, does not list this
+    /// build's id, or points at a launcher that is gone: Repair.
+    case cantReach
+    /// Installed only in Chrome profiles that are not open.
+    case wrongProfile
     case connected
 
-    /// `staged`: the Load unpacked folder is on disk. A connected extension
-    /// is connected whatever else is true — the relay only answers with the
-    /// flag on — so that is read first.
-    static func from(_ r: ChromeLaneReport?, staged: Bool) -> ChromeLaneState {
+    /// A connected extension is connected whatever else is true — the relay
+    /// only answers with the flag on — so that is read first. Then evidence:
+    /// a host problem matters only once something says the extension is
+    /// there, and "not installed" is said only when nothing does.
+    static func from(_ r: ChromeLaneReport?, facts: ChromeLaneFacts) -> ChromeLaneState {
         guard let r else { return .notInstalled }
         if r.connected { return .connected }
-        if !r.hostInstalled || (ChromeExtension.storeURL == nil && !staged) { return .notInstalled }
-        return r.enabled ? .waiting : .off
+        if r.hostInstalled && !r.enabled { return .off }
+        let hostProblem = !r.hostInstalled
+            || (facts.host.present && (!facts.host.missingIDs.isEmpty || !facts.host.launcherOK))
+        if facts.installed && hostProblem { return .cantReach }
+        if !facts.installed || !r.hostInstalled { return .notInstalled }
+        if facts.onlyInClosedProfiles { return .wrongProfile }
+        return .waiting
     }
 
     var word: String {
@@ -123,11 +168,15 @@ enum ChromeLaneState: Equatable, Sendable {
         case .notInstalled: return "Not installed"
         case .off: return "Off"
         case .waiting: return "Installed, not connected"
+        case .cantReach: return "Installed, can't reach Memoe"
+        case .wrongProfile: return "In another Chrome profile"
         case .connected: return "Connected"
         }
     }
 
     var good: Bool { self == .connected }
+    /// Amber: installed and something is in the way.
+    var warn: Bool { self == .waiting || self == .cantReach || self == .wrongProfile }
 }
 
 /// Connections › Chrome's state and its three actions. One per app; the
@@ -137,6 +186,9 @@ final class ChromeExtensionModel: ObservableObject {
     static let shared = ChromeExtensionModel()
 
     @Published private(set) var report: ChromeLaneReport?
+    /// What the app reads for itself: the host manifest, the host's seen
+    /// note, Chrome's profiles, whether Chrome is running.
+    @Published private(set) var facts: ChromeLaneFacts
     @Published private(set) var busy = false
     /// The last thing that went wrong, or what just happened, in plain words.
     @Published var note = ""
@@ -157,24 +209,56 @@ final class ChromeExtensionModel: ObservableObject {
         /// Open a URL in Google Chrome; false when there is no Chrome.
         var openInChrome: (URL) -> Bool
         var revealInFinder: (URL) -> Void
+        /// Add the store and dev origins to Chrome's host manifest when it
+        /// lacks one (`ChromeHostManifest.heal`).
+        var healHost: @Sendable () -> ChromeHostManifest.Heal = { ChromeHostManifest.heal() }
+        /// `ChromeLaneFacts.live()`.
+        var facts: @Sendable () -> ChromeLaneFacts = { ChromeLaneFacts.live() }
     }
     var seams: Seams
     private let demo: Bool
 
     init(seams: Seams = .live) {
         self.seams = seams
+        self.facts = .none
         self.demo = false
     }
 
     /// A fixed state for `--settings-snapshot`: no polling, no scripts.
-    init(demo report: ChromeLaneReport) {
+    init(demo report: ChromeLaneReport, facts: ChromeLaneFacts? = nil) {
         self.seams = .live
         self.report = report
+        // By default a demo's extension is installed exactly when its host is.
+        self.facts = facts ?? ChromeLaneFacts(
+            host: report.hostInstalled ? .init(present: true, missingIDs: [], launcherOK: true) : .absent,
+            seen: report.hostInstalled ? ChromeSeen(extensionID: ChromeExtension.storeID, at: .distantPast) : nil,
+            profiles: .unknown, chromeRunning: true)
         self.demo = true
     }
 
-    var state: ChromeLaneState {
-        ChromeLaneState.from(report, staged: demo ? (report?.hostInstalled ?? false) : seams.stagedExists())
+    var state: ChromeLaneState { ChromeLaneState.from(report, facts: facts) }
+
+    /// The detail's one line on what is in the way, or nil.
+    var why: String? {
+        switch state {
+        case .waiting:
+            return facts.chromeRunning ? ChromeExtension.Copy.waitingChromeOpen : ChromeExtension.Copy.waitingChromeClosed
+        case .cantReach:
+            if !(report?.hostInstalled ?? false) || !facts.host.present { return ChromeExtension.Copy.hostMissing }
+            if !facts.host.missingIDs.isEmpty { return ChromeExtension.Copy.hostOutdated }
+            return ChromeExtension.Copy.hostBroken
+        case .wrongProfile:
+            let names = (facts.profiles.withExtension ?? []).map(\.name)
+            return ChromeExtension.Copy.wrongProfile(names)
+        case .notInstalled, .off, .connected:
+            return nil
+        }
+    }
+
+    /// Which build is connected: "store", "dev", or nil.
+    var connectedBuild: String? {
+        guard state == .connected, let id = report?.extension?.extensionId else { return nil }
+        return id == ChromeExtension.storeID ? "store" : (id == ChromeExtension.extensionID ? "dev" : nil)
     }
 
     /// The staged extension is not the one the installed Hermes pins: an
@@ -207,6 +291,11 @@ final class ChromeExtensionModel: ObservableObject {
     func refresh() async {
         guard !demo else { return }
         let run = seams.configure
+        let heal = seams.healHost, gather = seams.facts
+        // Heal before reading, so the facts below describe the healed file.
+        let healed = await ScriptRunner.offMain { heal() }
+        if case .healed(let added) = healed { Log.write("chrome host manifest: added \(added.joined(separator: ", "))") }
+        facts = await ScriptRunner.offMain { gather() }
         let result = await ScriptRunner.offMain { run(["--chrome-extension-status"]) }
         switch result {
         case .success(let out):
@@ -240,7 +329,8 @@ final class ChromeExtensionModel: ObservableObject {
     /// Stage the folder, write the host, turn the lane on, then open
     /// Chrome's Extensions page and show the folder. With a store listing,
     /// open it instead of staging anything.
-    func setUp() async {
+    /// `openChrome: false` is Repair: write the host and heal it, nothing opened.
+    func setUp(openChrome: Bool = true) async {
         guard !busy else { return }
         note = ""
         // Before anything is written: install-host would make Chrome's own
@@ -256,11 +346,16 @@ final class ChromeExtensionModel: ObservableObject {
         if case .failure(let f) = await ScriptRunner.offMain({ run(["--set-chrome-extension", "on"]) }) {
             note = f.message; return
         }
+        // The pinned Hermes's install-host may write the dev id alone.
+        let heal = seams.healHost
+        _ = await ScriptRunner.offMain { heal() }
         let store = ChromeExtension.storeURL
-        if !seams.openInChrome(store ?? ChromeExtension.extensionsPage) {
-            note = ChromeExtension.Copy.noChrome
+        if openChrome {
+            if !seams.openInChrome(store ?? ChromeExtension.extensionsPage) {
+                note = ChromeExtension.Copy.noChrome
+            }
+            if store == nil { seams.revealInFinder(ChromeExtension.stagedFolder) }
         }
-        if store == nil { seams.revealInFinder(ChromeExtension.stagedFolder) }
         await refresh()
     }
 
@@ -278,10 +373,18 @@ final class ChromeExtensionModel: ObservableObject {
 
     func showFolder() { seams.revealInFinder(ChromeExtension.stagedFolder) }
 
+    /// The listing (or, without one, chrome://extensions): Chrome opens it
+    /// in the profile it last used, which is how "add it to this profile" works.
     func openExtensionsPage() {
         if !seams.openInChrome(ChromeExtension.storeURL ?? ChromeExtension.extensionsPage) {
             note = ChromeExtension.Copy.noChrome
         }
+    }
+
+    /// Bring Chrome up on its Extensions page: opening Chrome is what
+    /// connects an installed extension.
+    func openChromeExtensions() {
+        if !seams.openInChrome(ChromeExtension.extensionsPage) { note = ChromeExtension.Copy.noChrome }
     }
 }
 

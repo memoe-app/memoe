@@ -40,6 +40,7 @@
 # script exports both at a scratch directory too, for the suites that have no
 # conftest to do it.
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 SCRATCH="${MOE_TEST_SCRATCH:-${TMPDIR:-/tmp}}/moe-plugins-test.$$"
@@ -81,7 +82,14 @@ if [ -z "$PY" ]; then
   # is a failure to report, not a result: "nobody checked" and "checked and
   # fine" must never be the same exit code. Set MOE_TEST_PYTHON, or run
   # make-test-venv.sh, and it runs.
-  exit 1
+  #
+  # Exit 2 with these two lines is what scripts/test-all.sh reports as
+  # SKIPPED (missing input) — a third answer, neither a pass nor a failure of
+  # the code — and scripts/gate.sh refuses to ship on it: this suite is in
+  # its release-critical list.
+  echo "could not run: no interpreter with pytest — ./scripts/make-test-venv.sh"
+  echo "could not run"
+  exit 2
 fi
 echo "python: $PY"
 if [ -d "$HERMES_AGENT" ]; then
@@ -134,12 +142,46 @@ run_pytest "moe-screen pushes"     --import-mode=importlib moe-home/hermes-plugi
 run_pytest "moe-screen rearm"      --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_rearm.py
 run_pytest "moe-screen tasks"      --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_tasks.py
 run_pytest "moe-screen nowline"    --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_nowline.py
+run_pytest "moe-screen cronlist"   --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_cronlist.py
 # docs/FIXABLE-FAILURES.md slice 4: moe_open_settings refuses anything but an
 # allowlisted pane, and any turn the person is not at the Mac for — against
 # the fork's own turn_presence (the test finds a fork that has it; export
 # MOE_HERMES_FORK to choose one).
 run_pytest "moe-screen open-settings" --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_open_settings.py
+# moe_location: the Mac's location only in the person's own turn at the Mac,
+# down a pipe and never a file, and a plain sentence for every way of not
+# knowing (the app's half is LocationTests).
+run_pytest "moe-screen location"   --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_location.py
+run_pytest "moe-screen settings"   --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_settings.py
+# D4, both sides claim each run: the Mac's half (claim.py) asks the app before
+# a cron fires, and runs anyway — saying so — when nothing answers. Needs the
+# fork's `pre_cron_run` hook importable (Hermes on PYTHONPATH, as above).
+run_pytest "moe-screen claim"      --import-mode=importlib moe-home/hermes-plugins/moe-screen/tests/test_claim.py
 run_pytest "migrate-memory"       moe-home/hermes/tests/test_migrate_memory.py
+
+# Two files written as plain unittest scripts ("Run: python3 <file>") that no
+# runner named, found by scripts/test-suites-are-run.sh on 2026-11-12: 9
+# tests on the inbox's title-and-summary wire and 98 on who a message may go
+# to. Run the way their own docstrings say, because pytest cannot collect
+# them: test_recipients.py imports its fixture module (connector_output.py)
+# from beside itself, and test_inboxwords.py loads the plugin by path.
+#
+# The second had three red cases the day it was first run by anything: its
+# fixture chat.db had no attributedBody column, which imessage.sh has required
+# since it began decoding that column, so the connector refused with
+# "unfamiliar Messages layout" and the test read an empty answer. That is the
+# cost of an unrun suite, measured: its fixture drifted and nobody was told.
+run_unittest() {         # $1 = label, $2 = the test file
+  local log="$SCRATCH/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-').log"
+  if "$PY" "$2" >"$log" 2>&1 && grep -q '^OK' "$log"; then
+    ok "$1: $(grep -o 'Ran [0-9]* tests' "$log")"
+  else
+    bad "$1: $(tail -3 "$log" | tr '\n' ' ')"
+    grep -E '^(FAIL|ERROR):' "$log" | head -5 | sed 's/^/       /'
+  fi
+}
+run_unittest "moe-screen inboxwords" moe-home/hermes-plugins/moe-screen/tests/test_inboxwords.py
+run_unittest "recipients"            moe-home/hermes/tests/test_recipients.py
 run_pytest "learn"                moe-home/learn/tests
 run_pytest "connectors"           moe-home/connectors/tests
 

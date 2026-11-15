@@ -19,7 +19,7 @@ repo file.
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) (© 2025 Nous Research) | Agent runtime, separate process launched by Memoe | MIT | Yes |
 | [Memoe's Hermes fork](https://github.com/Izzy-Gottz/hermes-agent) (branch `claude-code-runtime`, pinned in `scripts/install-hermes.sh`) | The Hermes build Memoe installs and bundles: upstream plus Memoe's changes | MIT (same as upstream) | Yes |
 | [cua-driver](https://github.com/trycua/cua) (© 2025 Cua AI, Inc.) | Mac control through the accessibility tree; a separate program Hermes installs and runs, not linked into Memoe | MIT | Yes |
-| [OpenWhispr](https://github.com/OpenWhispr/OpenWhispr) (© 2024 OpenWhispr Team) | Dictation cleanup and dictionary prompts adapted (`PolishPrompt.swift`); no code linked | MIT | Yes |
+| [OpenWhispr](https://github.com/OpenWhispr/OpenWhispr) (© 2024 OpenWhispr Team) | Transcript cleanup and dictionary prompts adapted (`PolishPrompt.swift`); no code linked | MIT | Yes |
 | [Sparkle](https://github.com/sparkle-project/Sparkle) 2.6.4 | Auto-updates; ships as `Contents/Frameworks/Sparkle.framework` | MIT (+ bundled BSD-2, MIT, zlib components) | Yes |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) 1.24.2 via [onnxruntime-swift-package-manager](https://github.com/microsoft/onnxruntime-swift-package-manager) (© Microsoft Corporation) | Runs the Smart Turn and wake-word ONNX models in-process | MIT | Yes |
 | [LiveKit WakeWord](https://github.com/livekit/livekit-wakeword) 0.2.1 (© 2026 LiveKit, Inc.) | Training pipeline for "Hey Moe"; the detector design (`WakeHead.swift` is Memoe's own port, no LiveKit code linked) | Apache-2.0 | Yes |

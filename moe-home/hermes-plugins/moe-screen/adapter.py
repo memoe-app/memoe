@@ -40,6 +40,8 @@ from . import followups as _followups
 from . import hold as _hold
 from . import inboxwords as _inboxwords
 from . import pushes as _pushes
+from . import claim as _claim
+from . import cronlist as _cronlist
 from . import ran as _ran
 from . import rearm as _rearm
 from . import routine_health as _routine_health
@@ -162,7 +164,8 @@ def _note_ran(job_id: str) -> str:
         job = get_job(str(job_id)) or {}
     except Exception:  # noqa: BLE001
         return ""
-    return _ran.note_ran(job)
+    # `ran-offline` when this Mac ran it without the edge's word (D4).
+    return _ran.note_ran(job, status=_claim.status_for(job))
 
 
 def _occurrence_of(job_id: str) -> str:
@@ -543,6 +546,19 @@ def register(ctx) -> None:
         platform_hint="",
     )
     ctx.register_hook("pre_tool_call", rewrite_cron_deliver)
+    # Every job is on both sides (D2): the list says what the other side
+    # last saw a job say, and that a Mac-only one runs on the Mac.
+    ctx.register_hook("transform_tool_result", _cronlist.annotate)
+    # Both sides claim each run (D4): before a job of the person's fires
+    # here, ask the edge through the app whether another device has it. A
+    # Hermes without the seam simply never calls it, so it is registered
+    # only where it is declared — no unknown-hook warning on an older pin.
+    try:
+        from hermes_cli.plugins import VALID_HOOKS as _valid
+    except Exception:  # noqa: BLE001
+        _valid = ()
+    if "pre_cron_run" in _valid:
+        ctx.register_hook("pre_cron_run", _claim.before_run)
     # The other half of `deliver: moe`: what happens when the person
     # answers. Both live in this plugin because both are the same seam —
     # one writes down what was said, the other hands it back — and because
@@ -601,6 +617,36 @@ def register(ctx) -> None:
         check_fn=_open_settings.available,
         description=_open_settings.TOOL_SCHEMA["description"],
         emoji="⚙️",
+    )
+    # Memoe's own settings: find, change, open (docs/SETTINGS-ASSISTANT.md).
+    # The same toolset as moe_open_settings, on the Mac's list only:
+    # settings.py says what each refuses, and the app checks again.
+    # One call each, by name, so the send gate's test reads all three.
+    from . import settings as _settings
+    ctx.register_tool(name=_settings.FIND_TOOL, toolset=_settings.TOOLSET,
+                      schema=_settings.FIND_SCHEMA, handler=_settings.handle_find,
+                      check_fn=_settings.available,
+                      description=_settings.FIND_SCHEMA["description"], emoji="🔎")
+    ctx.register_tool(name=_settings.CHANGE_TOOL, toolset=_settings.TOOLSET,
+                      schema=_settings.CHANGE_SCHEMA, handler=_settings.handle_change,
+                      check_fn=_settings.available,
+                      description=_settings.CHANGE_SCHEMA["description"], emoji="🎚️")
+    ctx.register_tool(name=_settings.SHOW_TOOL, toolset=_settings.TOOLSET,
+                      schema=_settings.SHOW_SCHEMA, handler=_settings.handle_show,
+                      check_fn=_settings.available,
+                      description=_settings.SHOW_SCHEMA["description"], emoji="⚙️")
+    # Where this Mac is, from macOS Location Services, when a question needs
+    # a place (the weather, "near me"). Its own toolset, on the Mac's list
+    # only: location.py says how the answer travels and what it refuses.
+    from . import location as _location
+    ctx.register_tool(
+        name=_location.TOOL_NAME,
+        toolset=_location.TOOLSET,
+        schema=_location.TOOL_SCHEMA,
+        handler=_location.handle_tool,
+        check_fn=_location.available,
+        description=_location.TOOL_SCHEMA["description"],
+        emoji="📍",
     )
     # The one way the brain reaches the OWNER, and nobody else: words and at
     # most a chat app's name, never an address; the island while he is at the

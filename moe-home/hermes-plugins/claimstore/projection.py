@@ -458,8 +458,9 @@ def seed_account_name(store, full_name: str, *, source: str = ACCOUNT_SOURCE) ->
     from .store import claim_id, parse_claim
     cid = claim_id("user", text)
     try:
+        keys = store.opening_keys
         for record in store.claim_records("user"):
-            claim = parse_claim(record, store.opening_keys)
+            claim = parse_claim(record, keys)
             if claim and claim.get("claim") == cid:
                 return None
         for claim in store.resolve("user").live:

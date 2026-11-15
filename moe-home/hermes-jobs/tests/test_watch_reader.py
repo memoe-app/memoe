@@ -352,7 +352,21 @@ class ConfigLoaderMoved(Base):
         configured' is what made this silent: an empty gather is not an error,
         so the crawl reported success and learned nothing, every night."""
         mcp = self.MovedOn({})
-        sys.modules.pop("tools.mcp_tool_config", None)
+        # `None` in sys.modules, not a pop: a popped name is simply imported
+        # again, and test-plugins.sh puts the real Hermes on PYTHONPATH — so
+        # the real `tools.mcp_tool_config` came back, read this Mac's config,
+        # and the test was answered "pulse is not configured" by a Hermes
+        # that has the loader. `None` is what makes the import itself fail.
+        had = "tools.mcp_tool_config" in sys.modules
+        was = sys.modules.get("tools.mcp_tool_config")
+        sys.modules["tools.mcp_tool_config"] = None
+
+        def put_back():
+            if had:
+                sys.modules["tools.mcp_tool_config"] = was
+            else:
+                sys.modules.pop("tools.mcp_tool_config", None)
+        self.addCleanup(put_back)
         with self.assertRaises(RuntimeError) as caught:
             self.lib.connect("pulse", mcp)
         self.assertIn("no MCP server configuration", str(caught.exception))

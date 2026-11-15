@@ -25,7 +25,7 @@ struct PrivacySwitchStyle: ToggleStyle {
                     .padding(2)
             }
             .frame(width: 38, height: 22)
-            .animation(Theme.Motion.easeOut, value: configuration.isOn)
+            .calmAnimation(Theme.Motion.easeOut, value: configuration.isOn)
         }
         .buttonStyle(.plain)
         .accessibilityValue(configuration.isOn ? "on" : "off")
@@ -35,27 +35,23 @@ struct PrivacySwitchStyle: ToggleStyle {
 /// A Settings › Privacy switch only a person can flip (D9.14). The set goes
 /// through `.humanOnly`: a person's click inside the switch, or Return/Space
 /// on it, flips it; an accessibility press or a posted event runs nothing and
-/// asks the person to confirm with Touch ID or the login password. The frame
-/// is the switch's own, in window space, for the hit-test.
+/// asks the person to confirm with Touch ID or the login password. The probe
+/// behind the switch is its place in the window, for the hit-test.
 struct HumanLever: View {
     let control: String
     let value: Binding<Bool>
     var enabled = true
-    @State private var frame: CGRect?
+    @State private var place = HumanPressPlace()
     @State private var refused = false
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Toggle("", isOn: value.humanOnly(control, frame: frame, refused: $refused))
+            Toggle("", isOn: value.humanOnly(control, place: place, refused: $refused))
                 .labelsHidden()
                 .toggleStyle(PrivacySwitchStyle())
                 .disabled(!enabled)
                 .opacity(enabled ? 1 : 0.5)
-                .background(GeometryReader { geo in
-                    Color.clear
-                        .onAppear { frame = geo.frame(in: .global) }
-                        .onChange(of: geo.frame(in: .global)) { frame = $0 }
-                })
+                .background(HumanPressProbe(place))
             if refused {
                 Text(HumanOnly.note)
                     .font(Theme.Typo.ui(11))

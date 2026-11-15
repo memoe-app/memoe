@@ -131,15 +131,46 @@ class Registered(unittest.TestCase):
         path = os.path.expanduser("~/.hermes/hermes-agent/tools/tool_search.py")
         if not os.path.exists(path):
             self.skipTest("hermes-agent is not installed beside this checkout")
-        source = open(path, encoding="utf-8").read()
-        start = source.index("_DIRECT_SURFACE_TOOLSETS = frozenset(")
-        self.assertIn('"connectors"', source[start:source.index(")", start)])
+        self.assertIn('"connectors"', direct_surface_literal(open(path, encoding="utf-8").read()))
 
     def test_the_send_gate_knows_it(self):
         """A plugin tool missing from confirm-send.sh's table is a "not a tool
         Moe recognises" dialog; a ticket has never had one."""
         hook = os.path.join(_PKG, os.pardir, os.pardir, "hermes", "hooks", "confirm-send.sh")
         self.assertIn('"report_problem "', open(hook, encoding="utf-8").read())
+
+
+def direct_surface_literal(source):
+    """The set literal Hermes assigns to `_DIRECT_SURFACE_TOOLSETS`.
+
+    It was `_DIRECT_SURFACE_TOOLSETS = frozenset({...})`; at pin eb8e427cd1 it
+    is `_GUI_SURFACE_TOOLSETS | frozenset({...})`, and the test that looked
+    for the first spelling died on `str.index` instead of checking anything.
+    Either way the plugin toolsets are the names inside the first
+    `frozenset(` after the assignment — the part this returns. The GUI half
+    is session platforms, and `connectors` was never one of those."""
+    start = source.index("\n_DIRECT_SURFACE_TOOLSETS = ")
+    start = source.index("frozenset(", start)
+    return source[start:source.index(")", start)]
+
+
+class DirectSurfaceLiteral(unittest.TestCase):
+    """The reader above, against both spellings and against a Hermes that
+    dropped the toolset — so it cannot pass by reading the wrong span."""
+
+    OLD = '\n_DIRECT_SURFACE_TOOLSETS = frozenset({\n    "setup", "connectors",\n})\n'
+    NEW = ('# moe-connectors registers "connectors" tools\n'
+           '\n_DIRECT_SURFACE_TOOLSETS = _GUI_SURFACE_TOOLSETS | frozenset({\n'
+           '    "setup", "connectors", "moe_profile",\n})\n'
+           '_OTHER = frozenset({"connectors"})\n')
+
+    def test_both_spellings_are_read(self):
+        self.assertIn('"connectors"', direct_surface_literal(self.OLD))
+        self.assertIn('"connectors"', direct_surface_literal(self.NEW))
+
+    def test_a_hermes_that_dropped_it_is_not_read_as_having_it(self):
+        gone = self.NEW.replace('"setup", "connectors", "moe_profile"', '"setup", "moe_profile"')
+        self.assertNotIn('"connectors"', direct_surface_literal(gone))
 
 
 class Files(unittest.TestCase):

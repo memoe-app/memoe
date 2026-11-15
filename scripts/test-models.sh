@@ -1,4 +1,13 @@
 #!/bin/bash
+# NEEDS: dist-app
+# TOUCHES THE REAL MAC: for the length of the run it moves the speech-model
+# roots under this user's Application Support and ~/.cache/fluidaudio aside
+# (and puts them back on exit, on Ctrl-C and on TERM). A Memoe running at the
+# same time has its models taken away for those seconds, and a SIGKILL leaves
+# them parked as <root>.moved-<stamp>. Do not run it while somebody is using
+# Memoe on this Mac. It is release-critical in scripts/gate.sh all the same:
+# it is the only check that a bundle really carries its models.
+#
 # Proves a downloaded Moe can hear and speak on a Mac that has never fetched a
 # model — the thing the bundling exists for, and the one claim that cannot be
 # checked by looking at file sizes.
@@ -15,11 +24,31 @@
 #   4. every model loads with the network refused
 #   5. a real download already there is never touched
 #   6. a link left over from an older app is repointed
+#
+# Only step 4 touches the real caches. 3, 5 and 6 run against scratch roots
+# (`Moe --link-models <dir>`); 5 and 6 used to `rm -rf` inside the real,
+# moved-aside root for no reason but that step 4 had already taken it.
+#
+#   MOE_TEST_MODELS_APP=<bundle>     check this bundle instead of dist/Memoe.app
+#                                    (a Memoe Dev build, a slim build set aside)
+#   MOE_TEST_MODELS_SKIP_REAL_CACHES=1
+#                                    do not run step 4, so nothing outside the
+#                                    scratch directory is touched. The suite
+#                                    then says NOT RUN and exits 1: a release
+#                                    cannot be gated on a run that skipped the
+#                                    one check this file exists for.
+#
+# A slim bundle (MoeOnDemandComponents = on, docs/SLIM-DOWNLOAD.md) is checked
+# as what it is: the listed set minus ON_DEMAND_MODELS, those folders absent,
+# and step 4 loads what it carries (`--verify-models` says which it left out).
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
-BIN="$ROOT/dist/Memoe.app/Contents/MacOS/Moe"
-MODELS="$ROOT/dist/Memoe.app/Contents/Resources/Models"
+APPDIR="${MOE_TEST_MODELS_APP:-$ROOT/dist/Memoe.app}"
+BIN="$APPDIR/Contents/MacOS/Moe"
+MODELS="$APPDIR/Contents/Resources/Models"
+SKIP_REAL="${MOE_TEST_MODELS_SKIP_REAL_CACHES:-0}"
 APP_SUPPORT="$HOME/Library/Application Support/FluidAudio/Models"
 CACHE="$HOME/.cache/fluidaudio/Models"
 STAMP=$(date +%s)
@@ -76,8 +105,32 @@ trap restore EXIT
 trap 'restore; exit 130' INT TERM
 
 if [ ! -x "$BIN" ]; then
-  echo "✗ no dist/Memoe.app — run ./build.sh first" >&2; exit 1
+  echo "✗ no app at $APPDIR — run ./build.sh first" >&2; exit 1
 fi
+mkdir -p "$SCRATCH"
+# Which of the three builds this is, from the key the app itself acts on.
+OD_MODE="$(/usr/libexec/PlistBuddy -c 'Print :MoeOnDemandComponents' "$APPDIR/Contents/Info.plist" 2>/dev/null || true)"
+[ -n "$OD_MODE" ] || OD_MODE=off
+ON_DEMAND="$(sed -n 's/^ON_DEMAND_MODELS="\(.*\)"$/\1/p' scripts/fetch-models.sh)"
+LISTS="$ROOT/scripts/fetch-models.sh"
+if [ "$OD_MODE" = on ]; then
+  # The lists a slim bundle answers to: the same two lines, without the
+  # on-demand names. Derived, so a model added to either list is still
+  # required of a slim bundle the day it is added.
+  [ -n "$ON_DEMAND" ] || { echo "✗ the bundle says on, but fetch-models.sh has no ON_DEMAND_MODELS line" >&2; exit 1; }
+  LISTS="$SCRATCH/slim-lists.sh"
+  ON_DEMAND="$ON_DEMAND" python3 - "$ROOT/scripts/fetch-models.sh" "$LISTS" <<'PY'
+import os, re, sys
+drop = set(os.environ["ON_DEMAND"].split())
+out = []
+for line in open(sys.argv[1]):
+    m = re.match(r'^(APP_SUPPORT_MODELS|CACHE_MODELS)="(.*)"$', line.rstrip("\n"))
+    if m:
+        out.append('%s="%s"\n' % (m.group(1), " ".join(x for x in m.group(2).split() if x not in drop)))
+open(sys.argv[2], "w").writelines(out)
+PY
+fi
+echo "   ($APPDIR — on-demand mode: $OD_MODE)"
 
 echo "1. the models are in the bundle"
 if [ -d "$MODELS" ]; then
@@ -87,11 +140,20 @@ if [ -d "$MODELS" ]; then
   # over a bundle missing silero-vad and campplus and carrying 937 MB of
   # two engines deleted from the lists three days earlier. A check that
   # enumerates its own expectations agrees with itself and nothing else.
-  if ./scripts/check-bundled-models.sh "$MODELS" >/dev/null 2>&1; then
-    ok "the bundled set is exactly what the lists name"
+  if ./scripts/check-bundled-models.sh "$MODELS" "$LISTS" >/dev/null 2>&1; then
+    [ "$OD_MODE" = on ] && ok "the bundled set is exactly the lists minus the on-demand models ($ON_DEMAND)" \
+                        || ok "the bundled set is exactly what the lists name"
   else
-    bad "the bundled set does not match scripts/fetch-models.sh:"
-    ./scripts/check-bundled-models.sh "$MODELS" 2>&1 | sed 's/^/      /'
+    bad "the bundled set does not match scripts/fetch-models.sh ($OD_MODE):"
+    ./scripts/check-bundled-models.sh "$MODELS" "$LISTS" 2>&1 | sed 's/^/      /'
+  fi
+  # The other direction, for the two modes that carry everything: a `prepare`
+  # bundle missing an on-demand model has nothing to copy out, and says so
+  # nowhere. (For `on`, their absence is what the check above just required.)
+  if [ "$OD_MODE" != on ]; then
+    for m in $ON_DEMAND; do
+      [ -n "$(find "$MODELS/$m" -type f 2>/dev/null | head -1)" ] || bad "$OD_MODE, but $m is not in the bundle"
+    done
   fi
   find "$MODELS" -type l 2>/dev/null | grep -q . \
     && bad "the bundled models contain symlinks — they would dangle on any other Mac" \
@@ -142,6 +204,12 @@ echo "4. every model loads with the network refused"
 # it back — not lost, but indistinguishable from lost at the moment it
 # matters. restore() is written to cope with a flag set for a move that never
 # happened; it cannot cope with a move that nothing recorded.
+not_run=0
+if [ "$SKIP_REAL" = 1 ]; then
+  not_run=1
+  echo "  NOT RUN — MOE_TEST_MODELS_SKIP_REAL_CACHES=1. Nothing outside $SCRATCH was touched,"
+  echo "            and whether this bundle hears and speaks offline was not checked."
+else
 moved_app=1
 if [ -d "$APP_SUPPORT" ]; then
   mv "$APP_SUPPORT" "$APP_SUPPORT.moved-$STAMP" || { echo "✗ could not move $APP_SUPPORT aside" >&2; exit 1; }
@@ -157,32 +225,36 @@ case "$link_out" in *"linked $WANT"*) ok "linked into the real, now-empty roots"
 
 if verify="$("$BIN" --verify-models 2>&1)"; then
   ok "every bundled model loaded offline"
+  if [ "$OD_MODE" = on ]; then
+    printf '%s\n' "$verify" | grep -q "not checked: vocabulary boost, speaker diarization" \
+      && ok "…and it said which two it did not check, being a slim build" \
+      || bad "a slim build's offline check did not say what it left out"
+  fi
 else
   bad "offline load failed"
   printf '%s\n' "$verify" | grep -E '^(✗|…)' | sed 's/^/      /' | head -8
 fi
+fi
 
 echo "5. a real download is never replaced by a link"
-# Guarded on the move having actually happened. Steps 5 and 6 rm -rf a model
-# directory, and if step 4's `mv` had failed that directory would be the
-# developer's real 461 MB download rather than the scratch one.
-if [ "$moved_app" != 1 ]; then
-  bad "this suite does not own the cache root — refusing to touch it"
-  echo; echo "$pass passed, $fail failed"; exit 1
-fi
-rm -rf "$APP_SUPPORT/parakeet-tdt-0.6b-v3"
-mkdir -p "$APP_SUPPORT/parakeet-tdt-0.6b-v3"
-printf 'not ours\n' > "$APP_SUPPORT/parakeet-tdt-0.6b-v3/marker"
-out5="$("$BIN" --link-models 2>&1)"
-[ -f "$APP_SUPPORT/parakeet-tdt-0.6b-v3/marker" ] \
+# In scratch roots of its own. This and step 6 used to run inside the real
+# Application Support root while step 4 had it moved aside — an `rm -rf` of a
+# model directory there, guarded by a flag. Neither step needs the real root:
+# `--link-models <dir>` is the same code with the roots named.
+R56="$SCRATCH/roots56"
+mkdir -p "$R56/appsupport/parakeet-tdt-0.6b-v3"
+printf 'not ours\n' > "$R56/appsupport/parakeet-tdt-0.6b-v3/marker"
+out5="$("$BIN" --link-models "$R56" 2>&1)"
+[ -f "$R56/appsupport/parakeet-tdt-0.6b-v3/marker" ] && [ ! -L "$R56/appsupport/parakeet-tdt-0.6b-v3" ] \
   && ok "the existing directory is left exactly as it was" \
   || bad "a real model directory was replaced: $out5"
+case "$out5" in *"linked $((WANT - 1))"*) ok "…and the other $((WANT - 1)) were linked around it" ;; *) bad "unexpected: $out5" ;; esac
 
 echo "6. a stale link is repointed"
-rm -rf "$APP_SUPPORT/parakeet-tdt-0.6b-v3"
-ln -s /nowhere/at/all "$APP_SUPPORT/parakeet-tdt-0.6b-v3"
-"$BIN" --link-models >/dev/null 2>&1
-target=$(readlink "$APP_SUPPORT/parakeet-tdt-0.6b-v3" 2>/dev/null)
+rm -rf "$R56/appsupport/parakeet-tdt-0.6b-v3"
+ln -s /nowhere/at/all "$R56/appsupport/parakeet-tdt-0.6b-v3"
+"$BIN" --link-models "$R56" >/dev/null 2>&1
+target=$(readlink "$R56/appsupport/parakeet-tdt-0.6b-v3" 2>/dev/null)
 case "$target" in
   "$MODELS/parakeet-tdt-0.6b-v3") ok "a link to an app that moved is repaired" ;;
   *) bad "still points at: $target" ;;
@@ -236,5 +308,9 @@ else
 fi
 
 echo
+if [ "$not_run" = 1 ]; then
+  echo "$pass passed, $fail failed, and step 4 did not run — this is not a pass"
+  exit 1
+fi
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

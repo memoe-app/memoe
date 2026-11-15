@@ -75,6 +75,8 @@ MIDDLEWARE_KIND = "tool_execution"
 ROOM_ERRORS = (
     "would exceed the limit",
     "Replacement would put memory at",
+    # Hermes 0.21.7+: `replace` left the tool for `patch` (tools/memory_tool_store.py, _patch).
+    "Patch would put memory at",
     "Memory consolidation failed",
 )
 
@@ -250,8 +252,9 @@ def _would_be_live(store, target: str, cid: str) -> bool:
     Asked before writing, so that answer never costs a write."""
     if store.is_live(target, cid):
         return True
+    keys = store.opening_keys
     for record in store.claim_records(target):
-        claim = parse_claim(record, store.opening_keys)
+        claim = parse_claim(record, keys)
         if claim and claim.get("claim") == cid and claim.get("op") == RETRACT:
             return False
     return True
@@ -262,7 +265,7 @@ def take_overflow(args: Any, result: Any, *, session_id: str = "", provider=None
     if not isinstance(args, dict) or args.get("operations"):
         return None
     action = args.get("action")
-    if action not in ("add", "replace"):
+    if action not in ("add", "replace", "patch"):
         return None
     failure = _failure(result)
     if failure is None:
@@ -272,8 +275,10 @@ def take_overflow(args: Any, result: Any, *, session_id: str = "", provider=None
     if content is None:
         content = args.get("new_text")
     content = str(content or "").strip()
-    old_text = str(args.get("old_text") or "").strip()
-    if not content or (action == "replace" and not old_text):
+    # A patch's span keeps its whitespace, as the tool's own does ("tea " -> "coffee ").
+    raw_old = str(args.get("old_text") or "")
+    old_text = raw_old if action == "patch" else raw_old.strip()
+    if not content or (action != "add" and not old_text.strip()):
         return None
     if _scan_refuses(content):
         return None
@@ -296,6 +301,18 @@ def take_overflow(args: Any, result: Any, *, session_id: str = "", provider=None
         matches = [i for i, e in enumerate(entries) if old_text in e]
         if not matches or len({entries[i] for i in matches}) > 1:
             return None
+        if action == "patch":
+            # Since Hermes 0.21.7 the model edits a span, not the entry: the saved entry is the
+            # matched one with that one span spliced, exactly as the tool would have written it
+            # (tools/memory_tool_store.py, _patch_entry), and to the ledger that is a replace of
+            # the whole entry — the same mirror MemoryManager.notify_memory_tool_write makes.
+            entry = entries[matches[0]]
+            if entry.count(old_text) != 1:
+                return None
+            span = args.get("content") if args.get("content") is not None else args.get("new_text")
+            content = entry.replace(old_text, str(span or ""), 1).strip()
+            if not content or content == entry or _scan_refuses(content):
+                return None
         after = list(entries)
         after[matches[0]] = content
     total = len(delimiter.join(after))
@@ -319,12 +336,12 @@ def take_overflow(args: Any, result: Any, *, session_id: str = "", provider=None
         # A deleted fact the assistant restated becomes a question, not a
         # claim (on_memory_write) — not a save to report as one.
         return None
-    if action == "replace" and len(addressed_claims(store, target, old_text)) != 1:
+    if action != "add" and len(addressed_claims(store, target, old_text)) != 1:
         # on_memory_write would retract nothing and leave the old fact live
         # beside the new one: not what the tool was asked to do.
         return None
 
-    provider.on_memory_write(action, target, content,
+    provider.on_memory_write("add" if action == "add" else "replace", target, content,
                              {"write_origin": _write_origin(), "old_text": old_text})
     if not store.is_live(target, cid):
         logger.warning("claimstore: a %s past the %s cap did not become a live claim; Hermes's "
@@ -345,7 +362,7 @@ def take_overflow(args: Any, result: Any, *, session_id: str = "", provider=None
         now = []
     current = len(delimiter.join(now))
     pct = min(100, int(current * 100 / limit)) if limit > 0 else 0
-    done = "Entry added." if action == "add" else "Entry replaced."
+    done = {"add": "Entry added.", "patch": "Entry patched."}.get(action, "Entry replaced.")
     if content in now:
         message = (f"{done} Memory was full, so the oldest entries were moved out of this file to "
                    "make room — they are all still kept and recalled when relevant. Nothing to "

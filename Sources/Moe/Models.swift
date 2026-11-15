@@ -109,20 +109,37 @@ enum Models {
     }
 
     /// Links the cache at the bundled models. Returns a line for the log.
+    /// - Parameter models: the bundle's `Models` directory. A parameter so
+    ///   a test can hand it a stand-in for a slim bundle; the app passes none.
     @discardableResult
-    static func linkIfNeeded(rootsUnder base: URL? = nil) -> String {
-        guard let models = bundleModels else {
+    static func linkIfNeeded(rootsUnder base: URL? = nil, models: URL? = bundleModels) -> String {
+        guard let models else {
             return "no models in this build; they download on first use"
         }
         let fm = FileManager.default
         var linked: [String] = []
         var kept: [String] = []
         var failed: [String] = []
+        var cleared: [String] = []
 
         for (name, root) in bundled {
             let src = models.appendingPathComponent(name, isDirectory: true)
-            guard fm.fileExists(atPath: src.path) else { continue }
             let rootURL = root.url(under: base)
+            guard fm.fileExists(atPath: src.path) else {
+                // This build does not carry it (a slim build and an
+                // on-demand model: docs/SLIM-DOWNLOAD.md). A link an earlier
+                // build left, pointing at a model that is no longer anywhere,
+                // is worse than nothing: it reports itself as the model's
+                // folder and nothing can be downloaded "into" it. Only ever a
+                // link, and only one whose target is gone — a link into
+                // another live app, or a real folder, is somebody's model.
+                let dst = rootURL.appendingPathComponent(name, isDirectory: true)
+                if (try? fm.destinationOfSymbolicLink(atPath: dst.path)) != nil,
+                   !fm.fileExists(atPath: dst.path), (try? fm.removeItem(at: dst)) != nil {
+                    cleared.append(name)
+                }
+                continue
+            }
             try? fm.createDirectory(at: rootURL, withIntermediateDirectories: true)
             let dst = rootURL.appendingPathComponent(name, isDirectory: true)
 
@@ -153,6 +170,7 @@ enum Models {
         if !linked.isEmpty { parts.append("linked \(linked.count)") }
         if !kept.isEmpty { parts.append("kept \(kept.count)") }
         if !failed.isEmpty { parts.append("could not link \(failed.joined(separator: ", "))") }
+        if !cleared.isEmpty { parts.append("cleared \(cleared.count) stale") }
         return parts.isEmpty ? "no bundled models to link" : "models: " + parts.joined(separator: ", ")
     }
 
@@ -167,7 +185,11 @@ enum Models {
     static func verifyOffline() async -> Int {
         ModelHub.offlineMode = true
         defer { ModelHub.offlineMode = false }
-        return await fetchAll()
+        // A slim build does not carry the on-demand models, so "loads with
+        // the network off" is not a claim it makes about them — and saying
+        // which were left out is what keeps this from being a check that
+        // quietly covers less than its name says.
+        return await fetchAll(skippingOnDemand: OnDemandModels.mode == .on)
     }
 
     /// Warms every model this build wants to bundle, which is what downloads
@@ -175,8 +197,11 @@ enum Models {
     /// then copies the cache into the repo's `Models/`, so the list of files
     /// each repo needs comes from FluidAudio itself and can never drift from
     /// what the app loads.
-    static func fetchAll() async -> Int {
+    static func fetchAll(skippingOnDemand: Bool = false) async -> Int {
         var failures = 0
+        if skippingOnDemand {
+            FileHandle.standardError.write(Data("– not checked: vocabulary boost, speaker diarization (on demand in this build)\n".utf8))
+        }
 
         func step(_ name: String, _ work: () async throws -> Void) async {
             FileHandle.standardError.write(Data("… \(name)\n".utf8))
@@ -196,11 +221,13 @@ enum Models {
         await step("accurate transcriber (parakeet-tdt-0.6b-v3)") {
             _ = try await AsrModels.downloadAndLoad(version: .v3)
         }
-        await step("vocabulary boost (parakeet-ctc-110m)") {
-            _ = try await CtcModels.downloadAndLoad()
-        }
-        await step("speaker diarization") {
-            _ = try await DiarizerModels.downloadIfNeeded()
+        if !skippingOnDemand {
+            await step("vocabulary boost (parakeet-ctc-110m)") {
+                _ = try await CtcModels.downloadAndLoad()
+            }
+            await step("speaker diarization") {
+                _ = try await DiarizerModels.downloadIfNeeded()
+            }
         }
         await step("voice (kokoro-82m)") {
             let m = KokoroAneManager(variant: .english)

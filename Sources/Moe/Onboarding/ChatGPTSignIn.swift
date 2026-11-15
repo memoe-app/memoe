@@ -32,6 +32,11 @@ final class ChatGPTSignInFlow: ObservableObject {
     @Published private(set) var codeCopied = false
 
     var onStored: (() -> Void)?
+
+    /// What a failed sign-in says. The system's own error text and the
+    /// sign-in tool's last line go to the log.
+    nonisolated static let couldNotStart = "I couldn't start the sign-in. Quit Memoe, open it again and try once more."
+    nonisolated static let didNotFinish = "The sign-in didn't finish. Try again — and approve it in the browser page that opens."
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     var rehearsal = false
 
@@ -165,7 +170,8 @@ enum ChatGPTSignIn {
             }
         }
         do { try p.run() } catch {
-            return .failure("Moe couldn't start the sign-in: \(error.localizedDescription)")
+            Log.write("chatgpt sign-in: could not start: \(error)")
+            return .failure(ChatGPTSignInFlow.couldNotStart)
         }
         guard handle.attach(p) else { p.waitUntilExit(); return .failure("Cancelled.") }
         let deadline = Date().addingTimeInterval(ChatGPTSignInFlow.timeout)
@@ -185,7 +191,9 @@ enum ChatGPTSignIn {
             return .success
         }
         Log.write("chatgpt sign-in: hermes exited \(p.terminationStatus): \(last)")
-        return .failure(last.isEmpty ? "ChatGPT didn't finish the sign-in. Try again." : "ChatGPT didn't finish the sign-in: \(last)")
+        // What it printed last is in the log line above; the person gets
+        // a sentence they can act on.
+        return .failure(ChatGPTSignInFlow.didNotFinish)
     }
 
     /// Reads Hermes's prompt out of its output — measured from

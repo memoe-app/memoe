@@ -296,7 +296,7 @@ enum Chats {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("hermes/history.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/hermes/history.py")
+        if let c = Payload.checkoutPath("moe-home/hermes/history.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
@@ -356,7 +356,7 @@ enum Chats {
         // like an option, and argparse answers by printing usage to stderr
         // and exiting 2. The joined form has no such reading. Found by
         // searching for `-pelican` in the suite.
-        let r = ScriptRunner.run("/usr/bin/python3",
+        let r = ScriptRunner.run(BrainSetup.python(),
                                  [script, "search", "--query=" + query, "--limit=60"],
                                  stdin: sessions.joined(separator: "\n") + "\n",
                                  timeout: 20)

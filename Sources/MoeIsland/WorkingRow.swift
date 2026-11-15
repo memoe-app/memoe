@@ -34,6 +34,14 @@ public enum WorkingRow {
         return step.prefix(1).uppercased() + step.dropFirst()
     }
 
+    /// The one line the notch card gives the thinking inside the opened
+    /// steps: its first words, after a label.
+    public static func thinkingLine(_ thinking: String) -> String? {
+        let words = thinking.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !words.isEmpty else { return nil }
+        return "Thinking: " + words
+    }
+
     /// "0:42", "12:03" — a clock, not a duration in words, because it is
     /// glanced at rather than read.
     public static func elapsed(_ seconds: TimeInterval) -> String {
@@ -42,9 +50,12 @@ public enum WorkingRow {
     }
 
     /// "3 steps · 48 s" under an answer, or nil when there is nothing to fold.
-    public static func summary(steps: Int, took: TimeInterval?) -> String? {
-        guard steps > 0 else { return nil }
-        let count = steps == 1 ? "1 step" : "\(steps) steps"
+    /// `thought`: the provider streamed its thinking, which folds in here
+    /// too (the owner's answer 10) — "Thought it through" when there were
+    /// no steps besides.
+    public static func summary(steps: Int, took: TimeInterval?, thought: Bool = false) -> String? {
+        guard steps > 0 || thought else { return nil }
+        let count = steps == 0 ? "Thought it through" : steps == 1 ? "1 step" : "\(steps) steps"
         guard let took, took >= 1 else { return count }
         return "\(count) · \(Int(took.rounded())) s"
     }

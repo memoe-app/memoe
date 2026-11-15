@@ -18,7 +18,7 @@ public final class ConversationLedger {
     /// length of a person's history: it is a parse, a topological sort and
     /// two file writes at the end of every reply, and none of that belongs
     /// in front of the UI. Serial, so saves and resumes stay in order.
-    private let queue = DispatchQueue(label: "moe.ledger.conversations")
+    let queue = DispatchQueue(label: "moe.ledger.conversations")
 
     /// The keys the threads are sealed with. Beside the ledger, never in it.
     public let keyring: ThreadKeyring

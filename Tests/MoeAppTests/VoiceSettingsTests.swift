@@ -41,6 +41,7 @@ struct VoiceSettingsTests {
         case .panelOpens: m.panelOpens.wrappedValue = .always
         case .panelStays: m.panelStays.wrappedValue = 30
         case .typedOpensChat: m.typedOpensChat.wrappedValue = true
+        case .hoverOpens: m.hoverOpens.wrappedValue = false
         case .premium: m.premium.wrappedValue = false
         case .voice, .language, .replyLength: break
         }
@@ -68,7 +69,7 @@ struct VoiceSettingsTests {
             #expect(before != after, "\(control) did not change \(control.configKey) (still \(after ?? "nil"))")
         }
         // A control added without a flip, or a flip for a control that is gone.
-        #expect(VoiceSettingsModel.Control.allCases.count == 22)
+        #expect(VoiceSettingsModel.Control.allCases.count == 23)
     }
 
     /// The page must bind through the model, or the test above tests
@@ -85,7 +86,8 @@ struct VoiceSettingsTests {
             .sayOnIt: "model.sayOnIt", .tellProgress: "model.tellProgress", .ding: "model.ding",
             .speakSpoken: "model.speakSpoken", .speakTyped: "model.speakTyped",
             .typedReadAsText: "model.typedReadAsText", .panelOpens: "model.panelOpens",
-            .panelStays: "model.panelStays", .typedOpensChat: "model.typedOpensChat", .premium: "model.premium",
+            .panelStays: "model.panelStays", .typedOpensChat: "model.typedOpensChat",
+            .hoverOpens: "model.hoverOpens", .premium: "model.premium",
         ]
         for control in VoiceSettingsModel.Control.allCases {
             let needle = try #require(binding[control], "\(control) has no binding named here")

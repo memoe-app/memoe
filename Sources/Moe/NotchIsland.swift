@@ -36,7 +36,11 @@ final class NotchIsland {
     /// The draft in the ask field, held out here rather than in the view's
     /// `@State`, because the clock that folds a self-opened panel has to know
     /// whether something is half-typed — §7.
-    private let draft = IslandDraft()
+    let draft = IslandDraft()
+    /// The chat popped out of the notch (`FloatingChatWindow`). While it is
+    /// out, the notch never opens its own card: what would have opened it
+    /// brings the window forward instead (`chatIsOut`).
+    weak var floating: FloatingChatWindow?
     /// This panel opened itself when Moe answered, so it closes itself too:
     /// it never takes the keyboard, and it folds after long enough to read.
     private var selfOpened = false
@@ -63,11 +67,12 @@ final class NotchIsland {
     /// window has to hold `NotesPanel.maximumHeight`. At 330 it did not, and
     /// a notes panel measured honestly would have been clipped by the window
     /// instead of by the scroll view — the same content lost one layer up.
-    private let maxContentHeight: CGFloat = CGFloat(NotesPanel.maximumHeight)
+    private let maxContentHeight: CGFloat = CGFloat(max(NotesPanel.maximumHeight,
+                                                        Dropdown.expandedMaximumHeight))
 
     /// Redraw when the conversation state changes, so the glow appears and
     /// disappears without needing a hover to trigger a re-layout.
-    private var sessionObserver: Task<Void, Never>?
+    private var sessionObserver: AnyCancellable?
     private var dictationObserver: AnyCancellable?
     private var meetingObserver: AnyCancellable?
     private var bannerObserver: AnyCancellable?
@@ -87,6 +92,9 @@ final class NotchIsland {
     private var muteObserver: AnyCancellable?
     /// Keeps the folded island's click target on its ears (`refreshEarZone`).
     private var earObserver: AnyCancellable?
+    /// A capsule Mac only: the island steps round macOS's microphone pill
+    /// while any app has the microphone open (`MicIndicatorWatch`).
+    private var micObserver: AnyCancellable?
 
     init(conductor: Conductor) {
         self.conductor = conductor
@@ -186,7 +194,9 @@ final class NotchIsland {
             // The field grows with what is typed, a line at a time.
             draft.$text.map { $0.count / 30 + $0.filter { $0 == "\n" }.count }.removeDuplicates()
                 .map { _ in () }.eraseToAnyPublisher(),
-            draft.$attachments.map { $0.isEmpty }.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
+            draft.$attachments.map { $0.isEmpty }.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            // The compact card grows a row while its ⋯ is out.
+            draft.$trayOpen.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
             .debounce(for: .milliseconds(40), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self, self.presentation == .peek || self.presentation == .expanded,
@@ -216,6 +226,7 @@ final class NotchIsland {
                                                   transcriptOn: shows,
                                                   collapsed: self.presentation == .collapsed)
                 else { return }
+                if self.chatIsOut { self.floating?.handle(.summon, focus: false); return }
                 self.panel?.orderFrontRegardless()
                 self.collapseTask?.cancel()
                 self.selfOpened = true
@@ -262,21 +273,20 @@ final class NotchIsland {
                 self.apply(self.presentation, animated: true)
             }
 
-        sessionObserver = Task { [weak self] in
-            var wasLive = false
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                guard let self else { return }
-                let live = await MainActor.run { self.conductor.inConversation }
-                if live != wasLive {
-                    wasLive = live
-                    await MainActor.run {
-                        guard self.presentation == .collapsed else { return }
-                        self.apply(.collapsed, animated: true)
-                    }
-                }
+        // A conversation starting or ending redraws the folded island. This
+        // was a task that woke every 250 ms for the life of the app to ask;
+        // `inConversation` is published, so it tells us. `prepend(false)` and
+        // `dropFirst()` keep what the poll did at launch: nothing, unless a
+        // conversation is already live.
+        sessionObserver = conductor.$inConversation
+            .prepend(false)
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, self.presentation == .collapsed else { return }
+                self.apply(.collapsed, animated: true)
             }
-        }
     }
 
     // MARK: - Geometry
@@ -299,12 +309,39 @@ final class NotchIsland {
         NotchGeometry.measure(frame: screen.frame,
                               safeAreaTop: screen.safeAreaInsets.top,
                               left: screen.auxiliaryTopLeftArea,
-                              right: screen.auxiliaryTopRightArea)
+                              right: screen.auxiliaryTopRightArea,
+                              model: hardwareModel)
     }
+
+    /// `hw.model` ("Mac17,13"), read once. Only a floating capsule's own
+    /// numbers are looked up by it (`NotchGeometry.measuredCapsules`).
+    static let hardwareModel: String? = {
+        var size = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 1 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buffer)
+    }()
 
     private func notchSize(of screen: NSScreen) -> CGSize {
         Self.geometry(of: screen).size
     }
+
+    /// The floating capsule on that screen, if its cutout is one.
+    private func capsule(of screen: NSScreen) -> NotchGeometry.CapsuleCutout? {
+        Self.geometry(of: screen).capsule
+    }
+
+    /// Whether macOS may be drawing its microphone pill round that capsule
+    /// (`IslandView.indicatorLive`, from the same two facts). The watch is
+    /// only ever started on a Mac that has a capsule.
+    private func indicatorLive(_ capsule: NotchGeometry.CapsuleCutout?) -> Bool {
+        capsule != nil && (MicIndicatorWatch.shared.open || IslandView.usesMicrophone(conductor))
+    }
+
+    /// Reduce Motion (System Settings › Accessibility › Display): the island
+    /// changes shape at once instead of springing.
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     /// The talk-key row's sentence while Accessibility is off.
     private var liveAccessibility: String? {
@@ -362,7 +399,8 @@ final class NotchIsland {
         let panel = IslandView.dropdownContents(conductor, draft: draft, accessibility: accessibility,
                                                 updateShowing: UpdateReadyNotice.shared.showing(for: conductor),
                                                 width: Double(width), notch: notch)
-        return CGFloat(Dropdown.height(panel, wraps: IslandTextMeasure.wraps))
+        return CGFloat(Dropdown.height(panel, wraps: IslandTextMeasure.wraps,
+                                       maximum: Dropdown.maximum(expanded: !peek)))
     }
 
     /// The banners above the conversation, as `ConversationPanel` counts them.
@@ -423,8 +461,11 @@ final class NotchIsland {
     /// (docs/PANEL-FINDINGS.md §9). The snapshot asks the real layout rather
     /// than keeping its own copy of these numbers, because a preview that can
     /// drift from the thing it previews is worse than no preview.
-    func snapshotContentSize(for p: Presentation, notch: CGSize, accessibility: String?) -> CGSize {
-        contentSize(for: p, notch: notch, accessibility: accessibility)
+    func snapshotContentSize(for p: Presentation, notch: CGSize, accessibility: String?,
+                             trayOpen: Bool = false) -> CGSize {
+        draft.trayOpen = trayOpen
+        defer { draft.trayOpen = false }
+        return contentSize(for: p, notch: notch, accessibility: accessibility)
     }
     #endif
 
@@ -499,6 +540,7 @@ final class NotchIsland {
     // MARK: - Presentation
 
     func show(expanded: Bool) {
+        if expanded, chatIsOut { floating?.handle(.summon); return }
         collapseTask?.cancel()
         // An explicit command: whatever this puts on screen is not the panel
         // that opened itself, so it does not close itself either.
@@ -513,6 +555,15 @@ final class NotchIsland {
         if hovering {
             hoverExitTask?.cancel()
             hoverExitTask = nil
+            // The person's switch (Voice › More › "Hovering the notch opens
+            // it"). Off, a hover is nothing at all; a click still opens.
+            guard conductor.config.notchHoverOpens else { return }
+            // The chat is in its window: hovering the notch brings that
+            // window forward (without the keyboard — a hover is not a
+            // request to type). It used to show nothing, and with the window
+            // put away or behind a full-screen app the notch looked dead
+            // (the owner, 2026-11-14). The card itself still never opens.
+            if chatIsOut { floating?.handle(.summon, focus: false); return }
             // In every state, working included: the stop and the Work
             // silently switch live on the peek, and hovering is how the peek
             // is reached. `IslandBehaviour.hoverEntered` is the rule.
@@ -553,14 +604,23 @@ final class NotchIsland {
         let zone = hosting.hoverZone
         // Screen coordinates are bottom-left origin, so the zone hangs down
         // from the top edge of the panel.
+        let lift = hosting.hoverLift
         let rect = NSRect(x: panel.frame.midX + hosting.hoverShift - zone.width / 2,
                           y: panel.frame.maxY - zone.height,
-                          width: zone.width, height: zone.height)
-        return NSMouseInRect(NSEvent.mouseLocation, rect, false)
+                          width: zone.width, height: zone.height - lift.inset)
+        if NSMouseInRect(NSEvent.mouseLocation, rect, false) { return true }
+        guard lift.inset > 0 else { return false }
+        // The column over the camera, up to the top edge.
+        let stem = NSRect(x: panel.frame.midX - lift.stem / 2, y: panel.frame.maxY - lift.inset,
+                          width: lift.stem, height: lift.inset)
+        return NSMouseInRect(NSEvent.mouseLocation, stem, false)
     }
 
     private func apply(_ target: Presentation, animated: Bool) {
         guard let screen = hostScreen else { return }
+        // The one gate: with the chat in its window the notch draws no card,
+        // whoever asked. Every path that opens the card arrives here.
+        let target = chatIsOut && target.isOpen ? .collapsed : target
         let p = panel ?? build(on: screen)
         // Anything that is not the open panel ends a self-opened reveal: the
         // clock and the outside-click watch belong to that one panel.
@@ -571,16 +631,26 @@ final class NotchIsland {
             Log.write("island: \(presentation) → \(target) (muted)")
         }
         presentation = target
+        // Folding leaves the inbox, so the next hover opens on the chat and
+        // not on a list nobody asked for again. Before the size is taken,
+        // which reads `showingInbox`.
+        if target == .collapsed { conductor.closeInbox() }
+        // A thread on screen is never put away from under someone reading it
+        // (`Conductor.startFreshIfIdle`).
+        conductor.islandOpen = target == .peek || target == .expanded
+            || floating?.placement.floatingShown == true
 
         let notch = notchSize(of: screen)
+        let capsule = capsule(of: screen)
         let content = contentSize(for: target, notch: notch, accessibility: liveAccessibility)
         drawnContent = content
 
         // The window stays put; only what's drawn inside it changes.
         _ = p
-        let zone = hoverZone(for: target, content: content, notch: notch)
+        let zone = hoverZone(for: target, content: content, notch: notch, capsule: capsule)
         hosting?.hoverZone = zone.size
         hosting?.hoverShift = zone.shift
+        hosting?.hoverLift = hoverLift(for: target, notch: notch, capsule: capsule)
         // §1, part three: collapsed, every drawn thing has hit testing off, so
         // the hosting view takes the click itself and no gesture recogniser
         // can be rebuilt out from under it.
@@ -588,6 +658,8 @@ final class NotchIsland {
         let root = IslandView(conductor: conductor,
                               presentation: target,
                               notchSize: notch,
+                              capsule: capsule,
+                              micOpenSomewhere: capsule != nil && MicIndicatorWatch.shared.open,
                               contentSize: content,
                               draft: draft,
                               // A panel that opened itself must not swallow the
@@ -596,8 +668,9 @@ final class NotchIsland {
                               onTap: { [weak self] in self?.tapped() },
                               onHover: { [weak self] in self?.setHovering($0) },
                               onClose: { [weak self] in self?.foldByHand() },
-                              onOpenChat: { [weak self] in self?.onOpenWindow?() })
-        if animated {
+                              onOpenChat: { [weak self] in self?.onOpenWindow?() },
+                              onDetach: { [weak self] in self?.detach() })
+        if animated, !reduceMotion {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                 hosting?.rootView = root
             }
@@ -621,14 +694,26 @@ final class NotchIsland {
         // panel. Anywhere else on the island opens it, as always.
         if presentation == .collapsed, let x, let screen = hostScreen {
             let notch = notchSize(of: screen)
-            let drawn = notch.width > 0 && notch.height > 0 ? notch.width : NotchGeometry.virtualNotch.width
-            let right = IslandEars.of(IslandView.earInputs(conductor, open: false, waiting: earWaiting)).right
+            let capsule = capsule(of: screen)
+            // On a capsule the right side starts at the camera's edge, or
+            // past the system's microphone pill while that may be showing.
+            let live = indicatorLive(capsule)
+            let drawn = capsule.map { 2 * CapsuleIsland.inner($0, indicatorLive: live).right }
+                ?? (notch.width > 0 && notch.height > 0 ? notch.width : NotchGeometry.virtualNotch.width)
+            let right = IslandEars.of(IslandView.earInputs(conductor, open: false, waiting: earWaiting,
+                                                           capsule: capsule != nil)).right
+            let cap = capsule.map { CapsuleIsland.reach($0, left: 0, right: .infinity, indicatorLive: live).right }
             if IslandEars.hitsStop(xFromCentre: x, notchWidth: drawn, right: right,
+                                   maximumReach: cap ?? .infinity,
                                    measure: IslandView.earMeasure) {
                 Log.write("island: Stop pressed on the folded island's driving ear")
                 conductor.stopEverything()
                 return
             }
+        }
+        if chatIsOut {
+            floating?.handle(.summon)
+            return
         }
         switch IslandBehaviour.click(current: presentation, meetingOn: meetingOn) {
         case .ignore:
@@ -649,6 +734,7 @@ final class NotchIsland {
     /// island or a hover peek (`IslandBehaviour.click`, 2026-09-24 — a click
     /// on the island opens it here, never the window).
     func openByHand() {
+        if chatIsOut { floating?.handle(.summon); return }
         collapseTask?.cancel()
         // Opened by hand, so it is the user's: it keeps the keyboard, and no
         // clock folds it. A click in another app does (2026-09-25): since a
@@ -668,6 +754,34 @@ final class NotchIsland {
         conductor.meeting != .off && conductor.dictation == .off
     }
 
+    /// The chat is in its own window, and this is not a meeting or a
+    /// dictation — which are the notch's own panels and keep it.
+    var chatIsOut: Bool {
+        guard let floating else { return false }
+        return FloatingChat.routesToWindow(floating.placement, meetingOn: meetingOn,
+                                           dictating: conductor.dictation != .off)
+    }
+
+    /// The header's pop-out: the chat leaves the notch. The draft, the
+    /// tray and the conversation go with it, because they were never the
+    /// notch's: the window draws the same Conductor and the same draft.
+    func detach() {
+        floating?.handle(.detach)
+    }
+
+    /// The window came, went, or docked. Out: the notch's card folds at once
+    /// (never two cards). Docked: the card opens where it always was, so the
+    /// conversation does not vanish on the way back.
+    func placementChanged(_ placement: ChatPlacement, docked: Bool) {
+        if placement.isDetached {
+            if presentation.isOpen { foldByHand() } else { apply(presentation, animated: false) }
+        } else if docked {
+            openByHand()
+        } else {
+            apply(presentation, animated: false)
+        }
+    }
+
     /// The hover zone, as a size measured down from the top of the window,
     /// and how far its centre sits right of the window's.
     ///
@@ -680,18 +794,43 @@ final class NotchIsland {
     /// and only those: a notice's ear is two hundred points of menu bar on
     /// the right, and a zone centred on the notch would have taken the same
     /// two hundred points of clicks on the left, where nothing is drawn.
-    private func hoverZone(for target: Presentation, content: CGSize,
-                           notch: CGSize) -> (size: CGSize, shift: CGFloat) {
+    ///
+    /// On a floating capsule the folded zone is still measured from the top
+    /// edge of the screen and is never narrower than `minimumTargetWidth`:
+    /// the drawn capsule is 58 pt, and the target is not.
+    private func hoverZone(for target: Presentation, content: CGSize, notch: CGSize,
+                           capsule: NotchGeometry.CapsuleCutout?) -> (size: CGSize, shift: CGFloat) {
         let base = NotchGeometry.targetWidth(for: notch)
         guard target == .collapsed else {
             return (CGSize(width: max(content.width, base), height: notch.height + content.height), 0)
         }
         let r = IslandView.earReach(IslandEars.of(IslandView.earInputs(conductor, open: false,
-                                                                       waiting: earWaiting)))
+                                                                       waiting: earWaiting,
+                                                                       capsule: capsule != nil)))
         let drawn = notch.width > 0 && notch.height > 0 ? notch.width : NotchGeometry.virtualNotch.width
-        let left = max(base / 2, drawn / 2 + r.left)
-        let right = max(base / 2, drawn / 2 + r.right)
+        var left = max(base / 2, drawn / 2 + r.left)
+        var right = max(base / 2, drawn / 2 + r.right)
+        if let capsule {
+            // What is drawn (`CapsuleIsland.folded`): past the system's
+            // microphone pill while that may be showing.
+            let f = CapsuleIsland.folded(capsule, leftReach: r.left, rightReach: r.right,
+                                         indicatorLive: indicatorLive(capsule))
+            left = max(base / 2, -f.minX)
+            right = max(base / 2, f.maxX)
+        }
         return (CGSize(width: left + right, height: notch.height + content.height), (right - left) / 2)
+    }
+
+    /// The open card on a floating capsule starts below the top of the
+    /// screen, and the strip of menu bar above it is not the island's: a
+    /// click there goes to the menu bar. Only the column over the camera
+    /// stays the island's (`IslandHostingView.hoverLift`), so a pointer
+    /// resting at the top edge, where the resting target reaches, does not
+    /// fall out of the panel it just opened.
+    private func hoverLift(for target: Presentation, notch: CGSize,
+                           capsule: NotchGeometry.CapsuleCutout?) -> (inset: CGFloat, stem: CGFloat) {
+        guard let capsule, target == .peek || target == .expanded else { return (0, 0) }
+        return (capsule.topGap, NotchGeometry.targetWidth(for: notch))
     }
 
     /// `IslandView.attentionWaiting`, read from here: the right ear's dot is
@@ -708,7 +847,8 @@ final class NotchIsland {
     /// view redraws them by itself; this only moves the zone.
     private func refreshEarZone() {
         guard presentation == .collapsed, let screen = hostScreen, let hosting else { return }
-        let zone = hoverZone(for: .collapsed, content: drawnContent, notch: notchSize(of: screen))
+        let zone = hoverZone(for: .collapsed, content: drawnContent, notch: notchSize(of: screen),
+                             capsule: capsule(of: screen))
         if zone.size != hosting.hoverZone || zone.shift != hosting.hoverShift {
             hosting.hoverZone = zone.size
             hosting.hoverShift = zone.shift
@@ -765,6 +905,7 @@ final class NotchIsland {
     /// elsewhere — but with no reading clock: a question stays until answered
     /// or put away.
     func revealOffer() {
+        if chatIsOut { floating?.handle(.summon, focus: false); return }
         panel?.orderFrontRegardless()
         if presentation == .expanded { return }
         collapseTask?.cancel()
@@ -784,6 +925,10 @@ final class NotchIsland {
                                 policy: PanelReveal(configValue: conductor.config.panelOnReply),
                                 transcriptOn: conductor.showsTranscript)
         else { return }
+        // The chat is in its window: the answer is shown there, in front and
+        // without the keyboard, and the window is not folded by a clock —
+        // it was put where it is not in the way.
+        if chatIsOut { floating?.handle(.summon, focus: false); return }
         // Front, but not key: `orderFrontRegardless` shows a non-activating
         // panel over the call without taking the user's app away from them.
         panel?.orderFrontRegardless()
@@ -914,6 +1059,8 @@ final class NotchIsland {
         // A meeting panel's field has nowhere to show a file, and one that
         // cannot be seen must not ride along with the next question.
         guard !meetingOn else { return }
+        // Out in its window, the chat takes files dropped on the window.
+        if chatIsOut { return }
         collapseTask?.cancel()
         hoverExitTask?.cancel()
         if dragWatch == nil {
@@ -949,6 +1096,7 @@ final class NotchIsland {
         let taken = AttachmentIntake.take(from: pasteboard)
         guard !taken.isEmpty else { return false }
         draft.attachments.append(contentsOf: taken)
+        if chatIsOut { floating?.handle(.summon); return true }
         if presentation != .expanded {
             endReveal()
             apply(.expanded, animated: true)
@@ -963,16 +1111,20 @@ final class NotchIsland {
 
     private func build(on screen: NSScreen) -> NSPanel {
         let notch = notchSize(of: screen)
+        let capsule = capsule(of: screen)
         let content = contentSize(for: .collapsed, notch: notch, accessibility: liveAccessibility)
         let view = IslandView(conductor: conductor,
                               presentation: .collapsed,
                               notchSize: notch,
+                              capsule: capsule,
+                              micOpenSomewhere: capsule != nil && MicIndicatorWatch.shared.open,
                               contentSize: content,
                               draft: draft,
                               takesFocus: true,
                               onTap: { [weak self] in self?.tapped() },
                               onHover: { [weak self] in self?.setHovering($0) },
-                              onClose: { [weak self] in self?.foldByHand() })
+                              onClose: { [weak self] in self?.foldByHand() },
+                              onDetach: { [weak self] in self?.detach() })
         let host = IslandHostingView(rootView: view)
         host.onClick = { [weak self] x in self?.tapped(at: x) }
         host.takesTheClick = IslandBehaviour.hostViewTakesTheClick(current: .collapsed)
@@ -981,8 +1133,19 @@ final class NotchIsland {
         host.registerForDraggedTypes(AttachmentIntake.draggedTypes)
         hosting = host
 
+        if capsule != nil, micObserver == nil {
+            micObserver = MicIndicatorWatch.shared.$open
+                .removeDuplicates()
+                .dropFirst()
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    guard let self, self.presentation.isOnScreen else { return }
+                    self.apply(self.presentation, animated: true)
+                }
+        }
+
         let frame = windowFrame(on: screen)
-        let zone = hoverZone(for: .collapsed, content: content, notch: notch)
+        let zone = hoverZone(for: .collapsed, content: content, notch: notch, capsule: capsule)
         host.hoverZone = zone.size
         host.hoverShift = zone.shift
 
@@ -1041,6 +1204,10 @@ final class IslandHostingView: NSHostingView<IslandView> {
     /// How far the zone's centre sits right of the view's: the folded
     /// island's ears are not symmetric (`NotchIsland.hoverZone`).
     var hoverShift: CGFloat = 0
+    /// A floating capsule's open card: the top `inset` points of the zone
+    /// belong to the menu bar, except a column `stem` wide over the camera.
+    /// Zero everywhere else (`NotchIsland.hoverLift`).
+    var hoverLift: (inset: CGFloat, stem: CGFloat) = (0, 0)
 
     /// §1, part three — the part of the first-click fix that cannot fail.
     ///
@@ -1075,6 +1242,7 @@ final class IslandHostingView: NSHostingView<IslandView> {
         let fromCentre = abs(local.x - (bounds.midX + hoverShift))
         guard fromTop >= 0, fromTop <= hoverZone.height,
               fromCentre <= hoverZone.width / 2 else { return nil }
+        if fromTop < hoverLift.inset, abs(local.x - bounds.midX) > hoverLift.stem / 2 { return nil }
         return takesTheClick ? self : super.hitTest(point)
     }
 

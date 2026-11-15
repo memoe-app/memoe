@@ -16,6 +16,7 @@
 # same directory. Without that, half a user's data would land in a second
 # home nobody knows about.
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 SCRATCH="${MOE_TEST_SCRATCH:-$(mktemp -d)}"
@@ -122,9 +123,14 @@ echo "2b. a stray ~/.moe that holds nothing of yours is folded, not refused"
 # launch found "both exist", refused, and the payload then wrote a second
 # home into the empty ~/.moe. Driven through `Moe --migrate-home`, because
 # the real call reads homeDirectoryForCurrentUser and ignores $HOME.
-MB="${MOE_BIN:-}"
-[ -z "$MB" ] && [ -x "$ROOT/dist/Memoe.app/Contents/MacOS/Moe" ] && MB="$ROOT/dist/Memoe.app/Contents/MacOS/Moe"
-[ -z "$MB" ] && MB="$ROOT/.build/debug/Moe"
+#
+# The DEBUG binary, never dist/Memoe.app: `--migrate-home` is compiled only
+# into debug builds (main.swift, inside `#if DEBUG`). Handed the release
+# bundle, the flag is unknown, the app starts instead, RunningFromHere puts a
+# modal "This is a build of Moe from …" alert on whoever's screen this runs
+# on, and the suite waits on it until test-all's 30-minute limit (2026-11-13,
+# on ~/moe-release — the one checkout guaranteed to have a dist/ build).
+MB="${MOE_DEBUG_BIN:-$ROOT/.build/debug/Moe}"
 if [ ! -x "$MB" ]; then
   echo "  – skipped: no built Moe at $MB (swift build)"
 else

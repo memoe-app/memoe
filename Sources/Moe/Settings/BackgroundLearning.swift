@@ -34,7 +34,7 @@ enum BackgroundLearning {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("learn/consent.sh").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/learn/consent.sh")
+        if let c = Payload.checkoutPath("moe-home/learn/consent.sh") { candidates.append(c) }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
@@ -597,7 +597,7 @@ enum BackgroundLearning {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("learn/last_pass.py").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/moe-home/learn/last_pass.py")
+        if let c = Payload.checkoutPath("moe-home/learn/last_pass.py") { candidates.append(c) }
         return candidates.first { FileManager.default.isReadableFile(atPath: $0) }
     }
 
@@ -621,7 +621,7 @@ enum BackgroundLearning {
     /// missing. Blocking; call off the main thread.
     static func explain() -> String? {
         guard let script = lastPassScript() else { return nil }
-        let r = ScriptRunner.run("/usr/bin/python3", [script, "explain"], timeout: 10)
+        let r = ScriptRunner.run(BrainSetup.python(), [script, "explain"], timeout: 10)
         guard r.status == 0 else { return nil }
         let text = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text

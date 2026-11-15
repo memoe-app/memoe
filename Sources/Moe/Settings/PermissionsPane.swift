@@ -40,6 +40,12 @@ struct PermissionsPane: View {
                                     expanded: open == guide.id,
                                     toggle: { open = open == guide.id ? nil : guide.id })
                         }
+                        // Location: asked the first time a question needs
+                        // it, so it is not in the welcome's list (`all`).
+                        PermRow(guide: .location,
+                                state: states[PermissionGuide.location.id] ?? .unknown,
+                                expanded: open == PermissionGuide.location.id,
+                                toggle: { open = open == PermissionGuide.location.id ? nil : PermissionGuide.location.id })
                     }
 
                     screenGroup
@@ -170,6 +176,7 @@ struct PermissionsPane: View {
         for guide in PermissionGuide.all {
             next[guide.id] = PermissionStatus.current(guide.id)
         }
+        next[PermissionGuide.location.id] = LocationPermission.state()
         states = next
         browseAs = BrowseAs.read(home: Paths.home)
     }

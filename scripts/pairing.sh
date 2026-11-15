@@ -78,6 +78,18 @@ case "${1:-}" in
       [ "${#3}" -eq 16 ] || { echo "✗ that is not an install id"; exit 1; }
       exec "$CONN/channels.py" slack-confirm "$3"
     fi
+    # Somebody waiting at a channel the cloud holds (hermes-connections.py
+    # cloud_channel_knocks): not a Hermes pairing either. The id is the chat
+    # id zero-padded to 16 digits; channels.py approve takes it bare.
+    case "$2" in cloud_*)
+      ch="${2#cloud_}"
+      case "$ch" in ''|*[!a-z0-9_]*) echo "✗ that is not a channel"; exit 1 ;; esac
+      case "$3" in *[!0-9]*|'') echo "✗ that is not a chat"; exit 1 ;; esac
+      [ "${#3}" -eq 16 ] || { echo "✗ that is not a chat"; exit 1; }
+      chat="$(printf '%s' "$3" | sed 's/^0*//')"
+      [ -n "$chat" ] || { echo "✗ that is not a chat"; exit 1; }
+      exec "$CONN/channels.py" approve "$ch" "$chat"
+    esac
     valid_platform "$2"; valid_id "$3"; need_hermes
     out="$(hermes pairing approve "$2" "$3" 2>&1)" || true
     case "$out" in

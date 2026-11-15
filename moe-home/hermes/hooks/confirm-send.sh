@@ -57,8 +57,7 @@
 #     `tell application` clauses, sendmail, `mail -s` — still read those values.
 #   - mail from the shell: sendmail, mail, mutt, `open mailto:`
 #   - anything typed into a GUI via computer_use, and browser acts the call
-#     does not describe (see "Browser: five moments" — a submit through the
-#     structured browser_click on a bare ref cannot be told from any click)
+#     does not describe (see "Browser: five moments")
 #
 # Failure policy is CLOSED. Malformed input, a missing python3, a missing
 # confirm.sh, an interpreter crash — every one blocks. A gate that opens
@@ -195,6 +194,21 @@ if args is None:
     args = payload.get("args")          # Hermes-canonical name
 if not isinstance(args, dict):
     args = {}
+
+
+def _hermes_true(value):
+    """What Hermes goes on to RUN as true for a boolean argument — which is
+    not only a JSON true. This hook is handed the arguments as the model
+    wrote them; Hermes coerces them to the schema's types afterwards
+    (model_tools.handle_function_call → tools/arg_coercion.py, where
+    _coerce_boolean maps the string "true", any case, padded or not, to True),
+    and only then does the tool ask `is True` (tools/browser_use_cli.py,
+    `allow_signed_out=args.get("allow_signed_out") is True`). A gate that
+    read `is True` here would wave the string through to a tool that then
+    runs it. Anything else — "yes", 1, "1" — the tool itself treats as false,
+    so it is not asked about."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
 
 # Hermes registers MCP tools as mcp__<server>__<name> (tools/mcp_tool.py).
 # Match on the bare name: the server segment ("gmail", "slack") would make
@@ -338,8 +352,11 @@ def manifest_kind(bare_name):
 BUILTIN = {}
 for _n in ("read_file search_files session_search skills_list skill_view tool_search tool_describe "
            "web_search web_extract vision_analyze video_analyze x_search "
-           "browser_snapshot browser_console browser_get_images browser_vision "
-           "browser_navigate browser_back browser_scroll browser_click browser_dialog "
+           # Hermes's browser since its rewire (the 0.3.26 pin): browser_exec does
+           # every act as code (gate_browser reads it); browser_dialog only answers
+           # a dialog the page raised. The structured browser_navigate / _click /
+           # _type / _press ... tools were deleted upstream with agent-browser.
+           "browser_dialog "
            "clarify memory todo todo_list kanban_list kanban_show kanban_attachments "
            "ha_get_state ha_list_entities ha_list_services "
            "spotify_search spotify_devices spotify_library spotify_albums spotify_playlists "
@@ -355,7 +372,14 @@ for _n in ("read_file search_files session_search skills_list skill_view tool_se
            # 2026-09-11, this one 2026-09-20, on "are you connected to my gmail
            # and github?"). The test below now derives the list from the plugins
            # themselves, so a fourth forgotten name is a red suite, not a dialog.
-           "connections_list").split():
+           "connections_list "
+           # moe-screen's two Mac readers: `moe_settings_find` reads the list of
+           # Memoe's own settings the app publishes; `moe_location` returns where
+           # the Mac is to the turn that asked, and stores and sends nothing. The
+           # tool-name test never read moe-screen's registrations until
+           # 2026-11-14, so moe_location ran on a decision the owner had made in
+           # a dialog, and a fresh Mac would have asked (docs/SETTINGS-ASSISTANT.md).
+           "moe_settings_find moe_location").split():
     BUILTIN[_n] = "read"
            # `cronjob_manage` is Hermes's scheduling tool — the name it has
            # carried since the cron toolset was consolidated; `cronjob` is the
@@ -389,6 +413,10 @@ for _n in ("write_file patch delegate_task cronjob cronjob_manage skill_manage i
            # contact). The person asked for it, and the script checks their
            # Settings › Privacy switch itself before anything leaves.
            "report_problem "
+           # Opening Settings or System Settings on the person's own screen
+           # (docs/SETTINGS-ASSISTANT.md). Changing a setting and connecting a
+           # service are NOT here: see SETTINGS_DIRECT below.
+           "moe_settings_show moe_open_settings "
            # The kanban board is Hermes's own sqlite file on this Mac: writing a
            # card or a comment there is local work, whatever the verb says.
            "kanban_create kanban_complete kanban_block kanban_unblock kanban_link "
@@ -397,12 +425,17 @@ for _n in ("write_file patch delegate_task cronjob cronjob_manage skill_manage i
     BUILTIN[_n] = "local"
 for _n in "terminal process process_manage execute_code".split():
     BUILTIN[_n] = "shell"
+# Asks by default; SETTINGS_DIRECT (below) lets a quieter settings change
+# through. Filed here so the inventory and the plugin-tool test know them.
+for _n in "moe_settings_change connect_service".split():
+    BUILTIN[_n] = "act"
+# The browser tools gate_browser reads, by what each call carries.
+BROWSER_GATED = ("browser_cdp", "browser_exec")
 # `tool_call` is the tool-search bridge: Hermes unwraps it to the underlying
 # tool BEFORE hooks run (agent/tool_executor.py), so a call that still wears
 # this name here is one Hermes has already refused to dispatch.
 BUILTIN["tool_call"] = "local"
-for _n in ("browser_press browser_type browser_fill browser_key browser_cdp "
-           "browser_exec computer_use "
+for _n in ("browser_cdp browser_exec computer_use "
            # Hermes 0.21's credential vault. Filling a login or a card is a
            # keystroke on a page; the vault asks the person itself before a
            # card fill and refuses in headless sessions (upstream's gate), so
@@ -977,6 +1010,384 @@ def resolves_to_gate(path):
     return False
 
 
+# ---------------------------------------------------------------------------
+# What a path RESOLVES to, not how it is spelled (W1-A, 2026-11-12).
+#
+# Everything above this line recognises the gate by the substring /.moe/ —
+# and since 0.3.5 ~/.moe is only a link. The home is
+# ~/Library/Application Support/Moe, the app exports THAT as MOE_HOME, and
+# spelled that way all of these passed with no refusal and no dialog,
+# measured against a scratch home:
+#
+#     echo x > "<home>/tools/confirm.sh"              (terminal)
+#     echo x > "<home>/hermes/hooks/confirm-send.sh"  (terminal)
+#     write_file <home>/hermes/hooks/composio-budget.sh
+#     write_file <home>/.claude/settings.json
+#     mv "<home>/hermes/hooks" /tmp/off
+#     rm -rf "<home>/tools"      chmod 000 "<home>/tools"
+#
+# and so did any OTHER link pointing at the home, a relative path after
+# `cd "<home>"`, and every one of them for a MOE_HOME that is neither spelling.
+#
+# Three layers, each only ever ADDING a refusal to the ones above:
+#   1. the same substring tests, over every spelling of every home this
+#      process can name — MOE_HOME, the link, the release path, and what each
+#      of those resolves to (GATE_SPELLED);
+#   2. every path-like word of every argument, worded the way a shell words
+#      it (so a quoted or backslashed space stays inside its path), resolved,
+#      and compared with the gate files by resolved path and by inode
+#      (gate_class);
+#   3. a directory that CONTAINS a gate file, as the operand of something
+#      that moves, deletes or re-modes it.
+#
+# Files, not directories, exactly as above: <home>/tools is still the
+# toolbelt and running apple.sh from it by any spelling passes. No dialog is
+# added anywhere — these are refusals for gate files and nothing else.
+GATE_REL_FILES = ("tools/confirm.sh", "tools/gate.sh", "tools/confirm-away.py",
+                  ".claude/settings.json")
+GATE_REL_TREES = ("hermes/hooks", "gate")
+HERMES_REL_FILES = (".env", "config.yaml", "cron/jobs.json")
+HERMES_REL_TREES = ("plugins", "hooks", "moe/asks", "grounding")
+RELEASE_HOME_TAIL = "/Library/Application Support/Moe"
+
+
+def _spellings(paths):
+    """Each path as given and as resolved, once."""
+    out = []
+    for p in paths:
+        if not p:
+            continue
+        both = [p]
+        try:
+            both.append(os.path.realpath(p))
+        except (OSError, ValueError):
+            pass
+        for s in both:
+            s = os.path.normpath(s)
+            if s not in ("/", ".") and s not in out:
+                out.append(s)
+    return out
+
+
+_USER_HOMES = _spellings([os.path.expanduser("~")])
+MOE_HOMES = _spellings([MOE_HOME, os.path.expanduser("~/.moe"),
+                        os.path.expanduser("~" + RELEASE_HOME_TAIL)])
+HERMES_HOMES = _spellings([HERMES_HOME, os.path.expanduser("~/.hermes")])
+
+
+def _tails(home):
+    """A home, and the part of it after the user directory: the model may
+    write ~, $HOME, ${HOME} or another variable in front of that part, and a
+    substring test should not care which."""
+    out = [home]
+    for base in _USER_HOMES:
+        if home.startswith(base.rstrip("/") + "/"):
+            out.append(home[len(base.rstrip("/")):])
+    return out
+
+
+def _spelled(homes, rels):
+    out = []
+    for home in homes:
+        for tail in _tails(home):
+            for rel in rels:
+                s = fold(tail + "/" + rel)
+                if s not in out:
+                    out.append(s)
+    return tuple(out)
+
+
+# Layer 1. GATE_PATHS, GATE_DIRS and GATE_HOMES again, for every home.
+GATE_SPELLED = (_spelled(MOE_HOMES, GATE_REL_FILES + GATE_REL_TREES)
+                + _spelled(HERMES_HOMES, HERMES_REL_FILES + HERMES_REL_TREES))
+GATE_SPELLED_DIRS = _spelled(MOE_HOMES, ("tools", "hermes/hooks"))
+# Not the home itself: "…/Application Support/Moe" followed by a space is
+# also how "…/Application Support/Moe Dev/notes" begins. The home as a whole
+# is judged by layer 3, where it is one word.
+GATE_SPELLED_HOMES = (_spelled(MOE_HOMES, ("tools", "hermes", "hermes/hooks", "gate", ".claude"))
+                      + _spelled(HERMES_HOMES, ("cron", "grounding")))
+
+_GATE_INDEX = None
+_STAT_MEMO = {}
+_CLASS_MEMO = {}
+
+
+def _inode(path):
+    if path in _STAT_MEMO:
+        return _STAT_MEMO[path]
+    try:
+        st = os.stat(path)
+        got = (st.st_dev, st.st_ino)
+    except (OSError, ValueError):
+        got = None
+    if len(_STAT_MEMO) < 20000:
+        _STAT_MEMO[path] = got
+    return got
+
+
+def gate_index():
+    """The gate files, the directories that are gate all the way down, the
+    directories inside a home that hold one, and the directories above a
+    home — each as folded paths and, where it exists, as an inode."""
+    global _GATE_INDEX
+    if _GATE_INDEX is not None:
+        return _GATE_INDEX
+    files, trees, inside, tools, above = set(), set(), set(), set(), set()
+    for homes, rel_files, rel_trees in ((MOE_HOMES, GATE_REL_FILES, GATE_REL_TREES),
+                                        (HERMES_HOMES, HERMES_REL_FILES, HERMES_REL_TREES)):
+        for home in homes:
+            inside.add(home)
+            for rel in rel_files + rel_trees:
+                full = os.path.join(home, rel)
+                (trees if rel in rel_trees else files).add(full)
+                parent = os.path.dirname(full)
+                while len(parent) > len(home):
+                    inside.add(parent)
+                    parent = os.path.dirname(parent)
+            parent = os.path.dirname(home)
+            for _ in range(64):
+                above.add(parent)
+                if os.path.dirname(parent) == parent:
+                    break
+                parent = os.path.dirname(parent)
+    for home in MOE_HOMES:
+        tools.add(os.path.join(home, "tools"))
+    inside -= trees
+    above -= inside | trees
+
+    def both(paths):
+        return (frozenset(fold(p) for p in paths),
+                frozenset(i for i in (_inode(p) for p in paths) if i))
+    _GATE_INDEX = {"files": both(files), "trees": both(trees), "inside": both(inside),
+                   "tools": both(tools), "above": both(above)}
+    return _GATE_INDEX
+
+
+def gate_class(path):
+    """What an absolute path is to the gate: "gate" (a gate file, or anything
+    in a directory that is gate all the way down), "tools" (the directory
+    confirm.sh sits in), "inside" (another directory in a home that holds a
+    gate file, or the home), "above" (a directory a home sits in), or "".
+
+    By folded path first — which answers for a file that does not exist yet —
+    and then by inode, which answers for a hard link, a case or Unicode
+    variant, a firmlink, and anything else that names the same thing."""
+    if path in _CLASS_MEMO:
+        return _CLASS_MEMO[path]
+    idx = gate_index()
+    f = fold(path)
+    ino = _inode(path)
+    got = ""
+    if (f in idx["files"][0] or f in idx["trees"][0]
+            or any(f.startswith(t + "/") for t in idx["trees"][0])
+            or (ino and (ino in idx["files"][1] or ino in idx["trees"][1]))):
+        got = "gate"
+    else:
+        parent = path
+        for _ in range(48):
+            up = os.path.dirname(parent)
+            if up == parent:
+                break
+            parent = up
+            pin = _inode(parent)
+            if pin and pin in idx["trees"][1]:
+                got = "gate"
+                break
+    if not got:
+        for name in ("tools", "inside", "above"):
+            if f in idx[name][0] or (ino and ino in idx[name][1]):
+                got = name
+                break
+    if len(_CLASS_MEMO) < 20000:
+        _CLASS_MEMO[path] = got
+    return got
+
+
+_SHELL_PUNCT = "();<>|&"
+_QUOTED = re.compile("([" + chr(34) + chr(39) + chr(96) + "])(.{1,2048}?)\\1", re.S)
+_WORD_TRIM = chr(34) + chr(39) + chr(96) + " \t\r\n,;:()[]{}"
+UPROOT_WORDS = frozenset(("mv", "rm", "rmdir", "cp", "ln", "chmod", "chown", "chflags", "trash",
+                          "find", "xargs", "install", "rsync", "ditto", "unlink", "srm"))
+DESTROY_WORDS = frozenset(("mv", "rm", "rmdir", "trash", "chmod", "chown", "chflags", "srm"))
+# The same verbs as code writes them, for execute_code and python -c.
+CODE_UPROOTING = re.compile(
+    r"rmtree|shutil\.move|\bos\.(remove|unlink|rename|renames|replace|rmdir|removedirs|chmod|chown)\b"
+    r"|\.(unlink|rename|replace|rmdir|chmod)\s*\(")
+
+
+def shell_segments(raw):
+    """raw, worded the way a shell words it: a list of simple commands, each
+    a list of words with the quotes and backslashes already taken off — so
+    "~/Library/Application Support/Moe" and Application\\ Support are one
+    word each. A pipeline stays one segment (echo DIR | xargs rm -rf). The
+    second value is False when a line could not be worded to its end."""
+    segs, whole = [], True
+    for line in raw[:65536].split("\n"):
+        if not line.strip():
+            continue
+        cur = []
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = ""
+            for tok in lex:
+                if tok and all(c in _SHELL_PUNCT for c in tok):
+                    if ";" in tok or "&&" in tok or "||" in tok or tok == "&":
+                        if cur:
+                            segs.append(cur)
+                        cur = []
+                    continue
+                cur.append(tok)
+        except ValueError:
+            whole = False
+        if cur:
+            segs.append(cur)
+    return segs, whole
+
+
+def resolved_paths(word, cwds, budget):
+    """Every absolute path a word may name: as written and as resolved, each
+    glob expanded, a relative one against each directory in play."""
+    import glob as _glob
+    if not isinstance(word, str):
+        return []
+    word = word.strip(_WORD_TRIM)
+    if (not word or len(word) > 2048 or "://" in word or word.startswith("-")
+            or chr(0) in word):
+        return []
+    out = []
+    for piece in ([word] + word.split("=")[1:] if "=" in word else [word]):
+        piece = os.path.expandvars(os.path.expanduser(piece))
+        if os.path.isabs(piece):
+            bases = [piece]
+        elif cwds and piece and not piece.startswith(("$", "~")):
+            bases = [os.path.join(c, piece) for c in cwds[:8]]
+        else:
+            continue
+        for base in bases:
+            if budget[0] <= 0:
+                return out
+            budget[0] -= 1
+            names = [base]
+            if _GLOB_CHARS.search(base):
+                try:
+                    names += _glob.glob(base)[:50]
+                    head, tail = os.path.split(base)
+                    if _GLOB_CHARS.search(head):
+                        names += [os.path.join(h, tail) for h in _glob.glob(head)[:50]]
+                except Exception:
+                    pass
+            for name in names:
+                for p in (os.path.normpath(name),):
+                    if p not in out:
+                        out.append(p)
+                try:
+                    real = os.path.realpath(name)
+                    if real not in out:
+                        out.append(real)
+                except (OSError, ValueError):
+                    pass
+    return out
+
+
+def touches_the_gate_by_resolution(args):
+    """True when any word of any argument RESOLVES to the gate (layer 2), or
+    to a directory holding it in the hands of something that would move,
+    delete or re-mode that directory (layer 3)."""
+    strings = []
+    collect_strings(args, strings)
+    strings = [s for s in strings if isinstance(s, str) and s]
+    if not strings:
+        return False
+    # Directories a relative word may be relative to: a cwd-ish argument and
+    # every `cd`. Kept as written — a folded path is a different file on a
+    # case-sensitive disk, which is what the away machine has.
+    cwds = []
+
+    def add_cwd(held):
+        held = os.path.expandvars(os.path.expanduser(held.strip(_WORD_TRIM)))
+        for cand in ([held] if os.path.isabs(held) else [os.path.join(c, held) for c in cwds[:4]]):
+            if cand not in cwds:
+                cwds.append(cand)
+
+    if isinstance(args, dict):
+        for key in CWD_KEYS:
+            held = args.get(key)
+            if isinstance(held, str) and held.strip():
+                add_cwd(held)
+    worded = []
+    for raw in strings:
+        segs, whole = shell_segments(raw)
+        worded.append((raw, segs, whole))
+        for seg in segs:
+            for i, w in enumerate(seg[:-1]):
+                if os.path.basename(w) in ("cd", "pushd"):
+                    add_cwd(seg[i + 1])
+    # Where Hermes says the call runs. Trusted to say what a relative path
+    # names, and for nothing else: `find . -name x` in the home is not an
+    # attempt on it.
+    named_only = list(cwds)
+    held = payload.get("cwd")
+    if isinstance(held, str) and os.path.isabs(held.strip()) and held.strip() not in named_only:
+        named_only.append(held.strip())
+    budget = [6000]
+    for raw, segs, whole in worded:
+        low = fold(raw) if len(raw) <= 65536 else raw.lower()
+        basename_named = any(b in low for b in GATE_BASENAMES)
+        code_uproots = bool(CODE_UPROOTING.search(raw)) or (not whole and bool(UPROOTING.search(raw)))
+        # Words no shell made: the argument as a whole (a write_file path is
+        # one path, spaces and all), anything between quotes (code), and the
+        # plain split, for text shlex could not word.
+        loose = [raw] if len(raw) <= 2048 else []
+        loose += [m.group(2) for m in _QUOTED.finditer(raw[:65536])]
+        loose += [w for w in re.split(_SPLIT_WORDS, raw[:65536]) if "/" in w]
+        for word in loose:
+            for p in resolved_paths(word, named_only if word is raw else (), budget):
+                kind = gate_class(p)
+                if kind == "gate":
+                    return True
+                if kind in ("tools", "inside") and code_uproots:
+                    return True
+                if kind == "tools" and basename_named:
+                    return True
+        for seg in segs:
+            names = [os.path.basename(w) for w in seg]
+            uproots = any(n in UPROOT_WORDS for n in names)
+            destroys = None
+            for i, n in enumerate(names):
+                if n in DESTROY_WORDS or (n == "find" and any(
+                        w in ("-delete", "-exec", "-execdir", "-ok") for w in seg)):
+                    destroys = (i, n)
+                    break
+            operands = [i for i, w in enumerate(seg)
+                        if destroys and i > destroys[0] and not w.startswith("-")]
+            for i, word in enumerate(seg):
+                cd_target = i > 0 and names[i - 1] in ("cd", "pushd")
+                for p in resolved_paths(word, cwds, budget):
+                    kind = gate_class(p)
+                    if kind == "gate":
+                        return True
+                    if cd_target:
+                        continue
+                    if kind in ("tools", "inside") and (uproots or code_uproots):
+                        return True
+                    if kind == "tools" and basename_named:
+                        return True
+                    if kind == "above" and destroys and i in operands:
+                        # `mv a.pdf ~` puts something IN the directory; only
+                        # a directory being moved is taken away.
+                        if destroys[1] == "mv" and len(operands) > 1 and i == operands[-1]:
+                            continue
+                        return True
+                if word not in (".", "..") and "/" not in word:
+                    continue
+                # A relative word against where Hermes says the call runs.
+                for p in resolved_paths(word, [c for c in named_only if c not in cwds], budget):
+                    if gate_class(p) == "gate":
+                        return True
+    return False
+
+
 def uproots_the_gate(args):
     """True for a command that would move, delete or unarm the gate's home."""
     strings = []
@@ -989,7 +1400,7 @@ def uproots_the_gate(args):
         if not UPROOTING.search(raw):
             continue
         here = fold(raw)
-        for home in GATE_HOMES:
+        for home in GATE_HOMES + GATE_SPELLED_HOMES:
             # The directory as a whole word: `mv ~/.moe/hermes /tmp` yes,
             # `~/.moe/hermes/hooks/confirm-send.sh --help` is already covered
             # above, and `rm /tmp/moe-notes` is neither.
@@ -1051,6 +1462,9 @@ def names_the_gate(args):
         for cand in candidates:
             if any(p in cand + "/" for p in GATE_PATHS):
                 return True
+            # …and the same files under every spelling of every home.
+            if any(p in cand + "/" for p in GATE_SPELLED):
+                return True
         # A bare filename, with no directory anywhere to disambiguate it.
         if os.path.basename(here) in GATE_BASENAMES and os.path.dirname(here) in ("", "."):
             return True
@@ -1069,9 +1483,11 @@ def names_the_gate(args):
             return True
         # Directory and filename both present, joined by a shell we cannot see.
         lowered = fold(raw)
-        if any(d in lowered for d in GATE_DIRS) and any(b in lowered for b in GATE_BASENAMES):
+        if (any(d in lowered for d in GATE_DIRS + GATE_SPELLED_DIRS)
+                and any(b in lowered for b in GATE_BASENAMES)):
             return True
-    return False
+    # What each word resolves to, whatever it is spelled like.
+    return touches_the_gate_by_resolution(args)
 
 
 # notes_create / reminders_create write to Apple Notes and Reminders, not to
@@ -1833,11 +2249,10 @@ def emit(channel, to, body, raw="", first_recipient="", edits=None, headline="")
 #   MOE_COMPUTER_USE_CONFIRM=every    also gate click/drag/scroll/type/set_value
 #   MOE_COMPUTER_USE_CONFIRM=shortcuts gate only cmd/ctrl+Return, not plain Return
 #   MOE_COMPUTER_USE_CONFIRM=return   (default) gate every Return/Enter + newlines
-# The browser tools press keys too. `browser_press({"key": "Enter"})` is a
-# registered, installed Hermes tool whose own description says it is "useful
-# for submitting forms (Enter)" — which is the same act `computer_use key`
-# is gated for, through a different door. Typed text with a newline in it is
-# the same key by another route, exactly as it is for computer_use.
+# The browser presses keys too: `press_key("Enter")` inside browser_exec (or
+# Input.dispatchKeyEvent through browser_cdp) is the same act `computer_use
+# key` is gated for, through a different door. Typed text with a newline in
+# it is the same key by another route, exactly as it is for computer_use.
 
 # ── A broker's multiplexer: judged by what is inside it ──────────────────────
 #
@@ -2308,8 +2723,62 @@ if _account:
     sys.exit(0)
 
 
+# ── Moe's own settings, and connecting a service ─────────────────────────────
+# Text Moe read (a page, an email, a chat message) can ask for a tool call. So
+# a change to one of Memoe's settings runs without a dialog only when it makes
+# Moe do, say or listen less, or only changes how an answer is shown; any
+# other change — speech or nudges on, quiet hours off, a longer listening
+# window, a new talk key — asks the person, as a send does. Connecting a
+# service always asks. moe-bd's review, 2026-11-14 (docs/SETTINGS-ASSISTANT.md).
+#
+# A copy of SettingsCatalogue.direct, held HERE rather than read from the
+# catalogue file under the home, which whatever wrote there could rewrite.
+# SettingsCatalogueTests.theGateHoldsTheSameTable keeps the two equal.
+SETTINGS_DIRECT = {
+    "replyChime": ("off",), "instantAck": ("off",), "spokenProgress": ("off",),
+    "speakSpokenReplies": ("off",), "speakTypedReplies": ("off",), "speakReplies": ("screen",),
+    "nudges": ("off",), "quietHours": ("on",), "situationOffers": ("off",),
+    "closeOffer": ("off", "shown"), "meetingAutoStopOnCallEnd": ("on",),
+    "calendarHeadsUpMinutes": ("0",), "followUpSeconds": ("8",),
+    "replyLength": ("short", "balanced", "detailed"),
+    "replyReadingSeconds": ("6", "12", "30", "0"),
+    "typedRepliesReadAsText": ("on", "off"),
+    "panelOnReply": ("always", "silent", "never"),
+    "typedAnswersOpenChat": ("on", "off"),
+    "notchHoverOpens": ("on", "off"),
+    "tenMinuteCheck": ("off",),
+}
+_SETTING_ON = ("on", "true", "yes", "1", "enable", "enabled")
+_SETTING_OFF = ("off", "false", "no", "0", "disable", "disabled")
+#: Ids whose values are on/off, so "true" and "on" are one value.
+SETTINGS_TOGGLES = frozenset((
+    "replyChime", "instantAck", "spokenProgress", "speakSpokenReplies", "speakTypedReplies",
+    "nudges", "quietHours", "situationOffers", "meetingAutoStopOnCallEnd",
+    "typedRepliesReadAsText", "typedAnswersOpenChat", "notchHoverOpens", "tenMinuteCheck"))
+
+
+def settings_change_is_direct(a):
+    """True only for a change SETTINGS_DIRECT lists. Anything unreadable asks."""
+    if not isinstance(a, dict):
+        return False
+    sid, raw = a.get("id"), a.get("value")
+    if not isinstance(sid, str) or not isinstance(raw, (str, int, float, bool)) or sid not in SETTINGS_DIRECT:
+        return False
+    v = str(raw).strip().lower()
+    if sid in SETTINGS_TOGGLES:
+        v = "on" if v in _SETTING_ON else "off" if v in _SETTING_OFF else v
+    return v in SETTINGS_DIRECT[sid]
+
+
 # ── Layer D applied ───────────────────────────────────────────────────────────
 kind, why = declared(tool, bare, server, own)
+if own and bare == "moe_settings_change":
+    if settings_change_is_direct(args):
+        kind, why = "local", "it only makes Moe do or say less, or changes how answers are shown"
+    else:
+        kind, why = "act", "it lets Moe do, say or listen more, so the person is asked first"
+elif own and bare == "connect_service":
+    kind, why = "act", "connecting a service widens what Moe can reach, so the person is asked first"
 canon = policy_key(tool, bare, server, own)
 # What the act dialog calls the tool: the bare name, or for a broker batch
 # the slug inside it — "Tool: COMPOSIO_MULTI_EXECUTE_TOOL" tells a person
@@ -2370,6 +2839,11 @@ if kind == "run":
     # which is also what a forged policy entry buys: nothing, for messages.
     if message_shaped() or name_hit:
         force_ask = True
+    elif bare in BROWSER_GATED and _hermes_true(args.get("allow_signed_out")):
+        # Nor the question of WHO the browser is. "Always allow" on a browser
+        # tool was an answer about what it presses; whether it may carry on
+        # signed in as nobody was never asked then. On to gate_browser.
+        pass
     else:
         sys.stdout.write("PASS\n")
         sys.exit(0)
@@ -2869,6 +3343,21 @@ def _app_for_pid(pid):
 #   secret     entering a password, a card number, a CVV, an SSN
 #   grant      authorizing an app or granting a permission on a consent page
 #
+# And a sixth, which is not about what the page is asked to do but about WHO
+# is doing it (owner decision, 2026-11-12, "ask, then continue"):
+#
+#   signed-out a call that carries allow_signed_out — "run this in a fresh
+#              browser signed in as nobody", which Hermes offers only after the
+#              person's own signed-in profile failed to open
+#
+# Hermes's rule is that the model sets it "only after the person answered
+# yes". That made the person's yes the model's word for it: nothing stopped a
+# model passing the flag unasked, on a first call, in a scheduled job. Here
+# the yes is a tap. It is read off the call's ARGUMENT, not the script and not
+# the tool's name, so a read-only script asks too — signed out, "read my
+# orders" quietly returns a stranger's empty page — and so does a call the
+# person "always allowed" (see the run branch of Layer D).
+#
 # One yes covers that class for the rest of this conversation, for an hour —
 # Comet's "once per task" — written to the same grant file computer_use uses,
 # and promoted by the shell only after the person answered.
@@ -2954,6 +3443,34 @@ def _arm_class_grant(sess, cls):
     def _set(d):
         d["grants"][sess + "|" + cls] = time.time()
     _write_pending(sess, _set)
+
+
+_SIGNED_OUT = "signed_out"
+_SIGNED_OUT_CHANNEL = "browser signed-out"   # the shell matches this, verbatim
+_SIGNED_OUT_NOTE = ("Moe\u2019s browser is signed out here, so this would be done as nobody, "
+                    "not as you.")
+
+
+def _signed_out_allowed(sess):
+    """Has the person said yes to a signed-out browser in THIS conversation?
+
+    Its own key and nothing else. "Allow everything this session" pressed on a
+    payment or a post does not answer it: that was a yes to what Moe presses,
+    given while the browser was them. (Pressed on the signed-out card itself
+    it does cover it — the shell promotes the pending class grant with it.)
+    The clock is pushed forward on each use, as for "all": one yes covers the
+    conversation while it is going, and lapses an hour after it goes quiet.
+    """
+    if not sess:
+        return False
+    key = sess + "|" + _SIGNED_OUT
+    try:
+        ok = (time.time() - float(_grant_state()["grants"][key])) <= _SESSION_GRANT_TTL
+    except Exception:
+        return False
+    if ok:
+        _refresh_grant(key)
+    return ok
 
 
 # What the model does in a browser_exec script that COUNTS as acting on the
@@ -3052,11 +3569,6 @@ def _typed_items(bare, args, acted):
     selector or label it types into ("" when it types into whatever has
     focus), value the words (None when they are not a literal)."""
     out = []
-    if bare in ("browser_type", "browser_fill"):
-        tgt = " ".join(str(args.get(k)) for k in ("selector", "label", "name", "ref")
-                       if isinstance(args.get(k), (str, int)))
-        val = next((str(args.get(k)) for k in ("text", "value") if isinstance(args.get(k), (str, int, float))), None)
-        out.append((tgt, val))
     if bare == "browser_cdp" and str(args.get("method") or "") == "Input.insertText":
         params = args.get("params") if isinstance(args.get("params"), dict) else {}
         out.append(("", str(params.get("text")) if isinstance(params.get("text"), str) else None))
@@ -3158,33 +3670,25 @@ def _describe_browser(bare, args, acted, site):
         if w not in whats:
             whats.append(w)
     labels = []
-    if bare == "browser_click":
-        t = args.get("text") or args.get("label") or args.get("name")
-        if isinstance(t, str) and t.strip():
-            labels.append(_clean_label(t))
-    if bare == "browser_click" or _CLICKS.search(acted or ""):
+    if _CLICKS.search(acted or ""):
         for rx in _CLICK_LABELS:
             for m in rx.finditer(acted or ""):
                 lab = _clean_label(m.group(1))
                 if lab and lab not in labels:
                     labels.append(lab)
     keys = [m.group(1) for m in _KEYS.finditer(acted or "")]
-    if bare in ("browser_press", "browser_key"):
-        k = args.get("key") or args.get("keys")
-        if isinstance(k, str) and k.strip():
-            keys.append(k.strip()[:20])
     steps = []
     if labels:
         steps.append("press " + _and(["\u201c%s\u201d" % l for l in labels[:2]]))
-    elif bare == "browser_click" or _CLICKS.search(acted or ""):
+    elif _CLICKS.search(acted or ""):
         steps.append("click a button")
     if keys:
         steps.append("press " + _and(list(dict.fromkeys(keys))[:2]))
     if re.search(r"requestSubmit|\.submit\s*\(", acted or "") and not labels:
         steps.append("send the form")
-    if bare == "browser_select" or re.search(r"(?i)\bselect_option\s*\(", acted or ""):
+    if re.search(r"(?i)\bselect_option\s*\(", acted or ""):
         steps.append("choose an option")
-    if bare == "browser_upload" or re.search(r"(?i)\bupload\w*\s*\(", acted or ""):
+    if re.search(r"(?i)\bupload\w*\s*\(", acted or ""):
         steps.append("upload a file")
     if whats:
         head = "Type %s into %s" % (_and(whats[:3]), site)
@@ -3367,11 +3871,40 @@ def gate_browser(bare, args, session_id):
     if opened:
         _remember_browser_url(session_id, opened)
     ctx = corpus + "\n" + recent
-    structured_act = bare in ("browser_click", "browser_press", "browser_key",
-                              "browser_type", "browser_fill", "browser_select",
-                              "browser_upload")
-    typing = bare in ("browser_type", "browser_fill") or bool(_BROWSER_TYPES.search(acted))
+    # A browser_cdp call acts through its method (Input.*), read by _BROWSER_ACTS like code.
+    structured_act = False
+    typing = bool(_BROWSER_TYPES.search(acted))
+    signed_out = _hermes_true(args.get("allow_signed_out"))
+
+    def ask_signed_out(also=()):
+        """The signed-out card. `also`: what else this same call would do that
+        has its own card (pay, send, …) — said here, because one yes runs the
+        whole call. Only the signed-out grant is armed: the next payment still
+        asks, as a payment."""
+        # No reason is shown, because none reaches this hook: Hermes gave it
+        # to the model in the result of the call BEFORE this one, and a
+        # pre-tool hook sees only this call. A reason printed here would be
+        # the model's retelling, on a card whose point is not to take the
+        # model's word.
+        body = ("Moe\u2019s browser could not open with your logins. If you say yes, Moe carries "
+                "on in a fresh browser that is signed in to nothing: what it does there is "
+                "done as nobody, not as you.")
+        for line in also:
+            body += "\n\n" + line
+        body += ("\n\nIf you say yes, Moe can keep browsing signed out in this conversation "
+                 "for the next hour without asking again.")
+        detail = acted.strip() or json.dumps(
+            {k: v for k, v in args.items() if k != "code"}, ensure_ascii=False, indent=1)
+        detail = "\n".join(l.rstrip() for l in detail.splitlines() if l.strip())[:1200]
+        _arm_class_grant(session_id, _SIGNED_OUT)
+        emit_session(_SIGNED_OUT_CHANNEL, "a signed-out browser", body, raw=bare,
+                     tool_name="chrome", detail=detail,
+                     headline="Moe can\u2019t open your signed-in browser. Continue signed out?")
+
+    ask_identity = signed_out and not _signed_out_allowed(session_id)
     if not (structured_act or _BROWSER_ACTS.search(acted)):
+        if ask_identity:
+            ask_signed_out()
         sys.stdout.write("PASS\n")
         sys.exit(0)
     low = ctx.lower()
@@ -3381,8 +3914,6 @@ def gate_browser(bare, args, session_id):
     if any(h in low for h in _SEND_HOSTS) and (bare != "browser_exec" or _SEND_WORDS.search(acted)
                                                or re.search(r"(?i)\benter\b|\\r|\\n|dispatchKeyEvent", acted)):
         hits.append("send")
-    elif _SEND_WORDS.search(corpus) and bare in ("browser_click", "browser_press", "browser_key"):
-        hits.append("send")
     elif bare == "browser_exec" and _posts_a_form(acted, typing, opened or recent, session_id):
         hits.append("send")
     if _DELETE.search(ctx):
@@ -3391,9 +3922,16 @@ def gate_browser(bare, args, session_id):
         hits.append("secret")
     if _GRANT.search(ctx):
         hits.append("grant")
+    if ask_identity:
+        ask_signed_out([why_ask for cls, _verb, why_ask, _fb in _BROWSER_CLASSES
+                        if cls in hits and not _class_grant_allowed(session_id, cls)])
     for cls, verb, why_ask, fallback in _BROWSER_CLASSES:
         if cls not in hits or _class_grant_allowed(session_id, cls):
             continue
+        if signed_out:
+            # The card's own words imply the person's account ("in your
+            # name"). Signed out, that is not whose it is.
+            why_ask = why_ask + " " + _SIGNED_OUT_NOTE
         domain = _acting_domain(corpus, recent, hits)
         site = _plain_site(domain) if domain != "this page" else domain
         # The card says what will happen, in the page's own words, and why
@@ -3414,9 +3952,7 @@ def gate_browser(bare, args, session_id):
     sys.exit(0)
 
 
-if bare in ("browser_press", "browser_type", "browser_fill", "browser_key",
-            "browser_click", "browser_select", "browser_upload",
-            "browser_cdp", "browser_exec"):
+if bare in BROWSER_GATED:
     gate_browser(bare, args, session_id)
 
 
@@ -4399,6 +4935,19 @@ if [ -x /usr/bin/osascript ] || [ "${MOE_HOOK_TEST:-}" = "1" ]; then
     card$'\t'*|hold$'\t'*) UNATTENDED_ROUTE="${_route%%$'\t'*}"; UNATTENDED_WHY="${_route#*$'\t'}" ;;
   esac
 fi
+# The signed-out card (the classifier's _SIGNED_OUT_CHANNEL): a question about
+# who the browser is, not a step on a site, and worded as that below.
+SIGNED_OUT_CARD=""
+[ "$CHANNEL" = "browser signed-out" ] && SIGNED_OUT_CARD=1
+if [ "$UNATTENDED_ROUTE" = hold ] && [ -n "$SIGNED_OUT_CARD" ]; then
+  # Refused, and quiet: no note in the inbox. A held send is a prepared thing
+  # one tap finishes; "may the job that already ended browse signed out?" is
+  # not — a yes tomorrow has nothing left to run, and the job's own report is
+  # where what is waiting gets said (docs/INBOX-QUIET.md: every card carries a
+  # do-it, or it stays out).
+  log refused "$TOOL_NAME" "$TO"
+  block "Not done — Moe's browser could not open signed in, and carrying on signed out needs the owner's yes. This came from $UNATTENDED_WHY while the owner is away from the Mac, so nobody could be asked and nothing ran. This was Moe's gate, not the site. Do not call it again with allow_signed_out and do not try another way to browse signed out in this run: report what is waiting, and that it needs their signed-in browser or their yes."
+fi
 if [ "$UNATTENDED_ROUTE" = hold ]; then
   if HELD="$(hold_for_owner "$UNATTENDED_WHY")" && [ -n "$HELD" ]; then
     ASKED="Moe asked the owner for their OK in their inbox on the Mac"
@@ -4655,6 +5204,7 @@ if [ "$ANSWER" -eq 7 ]; then
     send) DID="the $CHANNEL message to $TO was not sent" ;;
     *)    DID="nothing was typed, pressed or sent on ${TO:-the page}" ;;
   esac
+  [ -n "$SIGNED_OUT_CARD" ] && DID="nothing ran in a signed-out browser"
   block "Not done — nobody answered Moe's confirmation card on the Mac in time, so $DID. This was the send gate waiting for the owner's OK, not the site: the step never ran. Tell the user it is waiting on their OK, and do not retry it or try another way unless they ask."
 fi
 if [ -n "$NOT_SENT_WHY" ]; then
@@ -4662,6 +5212,9 @@ if [ -n "$NOT_SENT_WHY" ]; then
   # "you cancelled": on the away machine "there is no way to ask you about
   # this from here" means nobody was asked at all.
   log not-sent "$TOOL_NAME" "$TO"
+  if [ -n "$SIGNED_OUT_CARD" ]; then
+    block "Not done (continuing in a signed-out browser): $NOT_SENT_WHY. Nothing ran. Tell the user exactly that, and do not call it again with allow_signed_out unless they say yes."
+  fi
   if [ "$KIND" = "act" ]; then
     block "Not done ($CHANNEL action, $TOOL): $NOT_SENT_WHY. Tell the user exactly that, and do not retry unless they ask."
   fi
@@ -4681,6 +5234,8 @@ fi
 case "$CHANNEL" in
   "browser account")
     block "Not done: you cancelled the confirmation card, so no account was created on $TO and no password was made. Tell the user that, and do not retry unless they ask." ;;
+  "browser signed-out")
+    block "Not done: the person said no to carrying on signed out, so nothing ran. Do not call it again with allow_signed_out and do not try another way to browse signed out in this conversation unless they ask. Tell them what is waiting on their signed-in browser." ;;
   browser\ *)
     block "Not done: you cancelled the confirmation card for this step on $TO, so nothing was typed, pressed or sent. Tell the user, and do not retry unless they ask." ;;
 esac

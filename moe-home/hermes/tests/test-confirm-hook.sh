@@ -6,6 +6,7 @@
 # the test can assert both the decision and the recipient shown to the human.
 set -u
 
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$HERE/../hooks/confirm-send.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/confirm-hook-test.XXXXXX")"
@@ -1089,20 +1090,20 @@ run "computer_use action='KEY ' → confirm" 0 no \
 # mail or chat page open; a click that pays, books, deletes or grants.
 : >"$STUB_LOG"
 rm -rf "$MOE_HOME/gate"
-run "browser_press Enter, nothing open → pass" 0 no \
-  '{"tool_name":"browser_press","session_id":"b-0","tool_input":{"key":"Enter","ref":"@e7"}}'
-run "browser_type with a newline, nothing open → pass" 0 no \
-  '{"tool_name":"browser_type","session_id":"b-0","tool_input":{"ref":"@e7","text":"Wire $50,000\n"}}'
+run "browser_exec press_key Enter, nothing open → pass" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-0","tool_input":{"code":"press_key(\"Enter\")"}}'
+run "browser_exec typing with a newline, nothing open → pass" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-0","tool_input":{"code":"fill_input(\"#amount\", \"Wire $50,000\\n\")"}}'
 [ ! -s "$STUB_LOG" ] && ok "  …a keypress is not a question" \
   || fail "  …Enter asked with no send in sight" "$(cat "$STUB_LOG")"
 run "browser_exec opens Gmail → pass (a read)" 0 no \
   '{"tool_name":"browser_exec","session_id":"b-1","tool_input":{"code":"new_tab(\"https://mail.google.com/mail/u/0/#inbox\")\nprint(page_info())"}}'
-run "browser_press Enter with Gmail open → confirm" 0 no \
-  '{"tool_name":"browser_press","session_id":"b-1","tool_input":{"key":"Enter","ref":"@e7"}}'
+run "browser_exec press_key Enter with Gmail open → confirm" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-1","tool_input":{"code":"press_key(\"Enter\")"}}'
 [ "$(grep -c "^browser send" "$STUB_LOG")" -eq 1 ] && ok "  …Enter in a mail page is a send" \
-  || fail "  …browser_press sent mail unasked" "$(cat "$STUB_LOG")"
+  || fail "  …press_key sent mail unasked" "$(cat "$STUB_LOG")"
 : >"$STUB_LOG"
-run "browser_press Tab → pass" 0 no '{"tool_name":"browser_press","session_id":"b-1","tool_input":{"key":"Tab"}}'
+run "browser_exec press_key Tab → pass" 0 no '{"tool_name":"browser_exec","session_id":"b-1","tool_input":{"code":"press_key(\"Tab\")"}}'
 [ ! -s "$STUB_LOG" ] && ok "  …and Tab is not" || fail "  …every browser key now asks"
 
 # Names real products use, for recipients and for the words.
@@ -1190,11 +1191,11 @@ rm -rf "$MOE_HOME/gate"
 run "browser_exec opens Slack → pass" 0 no \
   '{"tool_name":"browser_exec","session_id":"b-2","tool_input":{"code":"new_tab(\"https://app.slack.com/client/T1/C2\")\nprint(page_info())"}}'
 for key in "Control+Enter" "Meta+Enter" "Shift+Enter"; do
-  run "browser_press $key with Slack open → asked once" 0 no \
-    "$(printf '{"tool_name":"browser_press","session_id":"b-2","tool_input":{"key":"%s"}}' "$key")"
+  run "browser_exec press_key $key with Slack open → asked once" 0 no \
+    "$(printf '{"tool_name":"browser_exec","session_id":"b-2","tool_input":{"code":"press_key(\\"%s\\")"}}' "$key")"
 done
-run "browser_press keys as a list, same thread → covered" 0 no \
-  '{"tool_name":"browser_press","session_id":"b-2","tool_input":{"keys":["Enter"]}}'
+run "browser_exec press_key Enter again, same thread → covered" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-2","tool_input":{"code":"press_key(\"Enter\")"}}'
 [ "$(grep -c "^browser send" "$STUB_LOG")" -eq 1 ] && ok "  …asked once, then the yes covers the conversation" \
   || fail "  …a modified Enter asked more than once, or not at all" "$(cat "$STUB_LOG")"
 : >"$STUB_LOG"
@@ -1212,10 +1213,10 @@ run "browser_exec: narration says Booking.com, the code only reads → pass" 0 n
   '{"tool_name":"browser_exec","session_id":"b-4","tool_input":{"code":"# Searching Booking.com for Hanoi refundable stays\nnew_tab(\"https://www.booking.com/searchresults.html?ss=Hanoi\")\nwait_for_load()\nprint(page_info()[:4000])"}}'
 run "browser_exec: a comment says Book the room, the code clicks a date → pass" 0 no \
   '{"tool_name":"browser_exec","session_id":"b-4","tool_input":{"code":"# Book the room for the 26th\nclick(\"text=26\")\nprint(page_info())"}}'
-run "browser_click on a plain button → pass" 0 no \
-  '{"tool_name":"browser_click","session_id":"b-4","tool_input":{"ref":"@e12"}}'
-run "browser_type a search → pass" 0 no \
-  '{"tool_name":"browser_type","session_id":"b-4","tool_input":{"ref":"@e3","text":"hostels in hanoi"}}'
+run "browser_exec: click_at_xy on a plain button → pass" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-4","tool_input":{"code":"click_at_xy(412, 230)"}}'
+run "browser_exec: type a search → pass" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-4","tool_input":{"code":"fill_input(\"#search\", \"hostels in hanoi\")"}}'
 [ ! -s "$STUB_LOG" ] && ok "  …clicking, typing, dates and reads never ask" \
   || fail "  …ordinary browsing raised a dialog" "$(cat "$STUB_LOG")"
 
@@ -1254,8 +1255,8 @@ run "browser_exec: fill a password field → confirm" 0 no \
   '{"tool_name":"browser_exec","session_id":"b-8","tool_input":{"code":"fill(\"input[type=password]\", \"hunter2\")"}}'
 [ "$(grep -c "^browser secret" "$STUB_LOG")" -eq 1 ] && ok "  …entering a password asks" || fail "  …a password was typed unasked" "$(cat "$STUB_LOG")"
 : >"$STUB_LOG"
-run "browser_click Forgot password (no typing) → pass" 0 no \
-  '{"tool_name":"browser_click","session_id":"b-8","tool_input":{"ref":"@e4","text":"Forgot password?"}}'
+run "browser_exec: click Forgot password (no typing) → pass" 0 no \
+  '{"tool_name":"browser_exec","session_id":"b-8","tool_input":{"code":"click(\"text=Forgot password?\")"}}'
 [ ! -s "$STUB_LOG" ] && ok "  …clicking near the word is not entering one" || fail "  …a click asked as if it typed a secret" "$(cat "$STUB_LOG")"
 : >"$STUB_LOG"
 run "browser_exec: Allow on a Google consent page → confirm" 0 no \
@@ -1513,9 +1514,9 @@ do
   rm -rf "$MOE_HOME/gate"
 done
 : >"$STUB_LOG"
-run "browser_fill into the field labelled Password → the secret card" 0 no \
-  '{"tool_name":"browser_fill","session_id":"pw-5","tool_input":{"label":"Password","text":"hunter2"}}'
-grep -q "^browser secret" "$STUB_LOG" && ok "  …a labelled field counts" || fail "  …browser_fill of a password went in unasked" "$(cat "$STUB_LOG")"
+run "browser_exec: fill_input into the field labelled Password → the secret card" 0 no \
+  '{"tool_name":"browser_exec","session_id":"pw-5","tool_input":{"code":"fill_input(\"[aria-label=Password]\", \"hunter2\")"}}'
+grep -q "^browser secret" "$STUB_LOG" && ok "  …a labelled field counts" || fail "  …a password went in unasked" "$(cat "$STUB_LOG")"
 # What is not.
 : >"$STUB_LOG"
 rm -rf "$MOE_HOME/gate"
@@ -2787,7 +2788,11 @@ if [ -d "$PLUGINS" ]; then
   else
     ok "read the tools Moe's plugins register ($(printf '%s\n' "$PLUGIN_TOOLS" | wc -l | tr -d ' ') of them)"
     UNKNOWN=""
+    # The two that ask by design (SETTINGS_DIRECT in the hook): they are
+    # tested on their own below, and with no arguments they must ask.
+    ASKS_BY_DESIGN=" moe_settings_change connect_service "
     for t in $PLUGIN_TOOLS; do
+      case "$ASKS_BY_DESIGN" in *" $t "*) bash "$HOOK" --inventory 2>/dev/null | grep -q "^$t	" || UNKNOWN="$UNKNOWN $t"; continue ;; esac
       run "$t → runs, no dialog" 0 no "{\"tool_name\":\"$t\",\"tool_input\":{}}"
       bash "$HOOK" --inventory 2>/dev/null | grep -q "^$t	" || UNKNOWN="$UNKNOWN $t"
     done
@@ -2801,6 +2806,44 @@ if [ -d "$PLUGINS" ]; then
 else
   fail "find moe-home/hermes-plugins" "looked in $PLUGINS"
 fi
+
+# Moe's own settings and connecting a service (moe-bd's review, 2026-11-14;
+# docs/SETTINGS-ASSISTANT.md). Text Moe read can ask for a tool call, so a
+# settings change that makes Moe do, say or listen more — and any connection —
+# reaches the person's eyes first. Quieter changes run. Denied → blocked, and
+# the dialog was raised: remove the SETTINGS_DIRECT branch and these go red.
+export STUB_ANSWER=no
+for args in '{"id":"speakReplies","value":"loud"}' '{"id":"nudges","value":"on"}' \
+            '{"id":"quietHours","value":"off"}' '{"id":"followUpSeconds","value":"30"}' \
+            '{"id":"talkKey","value":"rightOption"}' '{"id":"replyChime","value":"on"}' \
+            '{"id":"closeOffer","value":"spoken"}' '{"id":"situationOffers","value":"true"}' \
+            '{"id":"tenMinuteCheck","value":"on"}' '{"id":"learning","value":"off"}' \
+            '{"id":"notAThing","value":"off"}' '{"id":"replyChime"}' '{}' '{"id":["replyChime"],"value":"off"}'; do
+  : >"$STUB_LOG"
+  run "settings change $args → asks, and no is no" 2 yes \
+    "{\"tool_name\":\"moe_settings_change\",\"tool_input\":$args}"
+  [ -s "$STUB_LOG" ] && ok "  …the person was asked" || fail "  …the person was asked" "no dialog for $args"
+done
+for args in '{"id":"replyChime","value":"off"}' '{"id":"replyChime","value":"False"}' \
+            '{"id":"speakReplies","value":"screen"}' '{"id":"nudges","value":"off"}' \
+            '{"id":"quietHours","value":"on"}' '{"id":"replyLength","value":"Detailed"}' \
+            '{"id":"calendarHeadsUpMinutes","value":"0"}' '{"id":"notchHoverOpens","value":"off"}' \
+            '{"id":"tenMinuteCheck","value":"off"}'; do
+  : >"$STUB_LOG"
+  run "settings change $args → quieter, runs" 0 no \
+    "{\"tool_name\":\"moe_settings_change\",\"tool_input\":$args}"
+  [ ! -s "$STUB_LOG" ] && ok "  …and nobody was asked" || fail "  …and nobody was asked" "$(cat "$STUB_LOG")"
+done
+for args in '{"service":"notion"}' '{"service":"gmail","another_account":true}' '{}'; do
+  : >"$STUB_LOG"
+  run "connect_service $args → asks, and no is no" 2 yes \
+    "{\"tool_name\":\"connect_service\",\"tool_input\":$args}"
+  [ -s "$STUB_LOG" ] && ok "  …the person was asked" || fail "  …the person was asked" "no dialog for $args"
+done
+export STUB_ANSWER=yes
+: >"$STUB_LOG"
+run "connect_service, the person says yes → runs" 0 no \
+  '{"tool_name":"connect_service","tool_input":{"service":"notion"}}'
 
 # The dialog names whoever the tool belongs to, in a name the person knows.
 # The owner's screenshot was titled "Hermes" — the engine's name, which
@@ -3214,6 +3257,135 @@ run "cron gmail send, owner away → held" 2 yes \
   '{"tool_name":"gmail_send_email","tool_input":{"to":"dad@example.com","subject":"Late","body":"Running 10 minutes late"}}'
 said "was not sent" && ok "  …says the message was not sent" || fail "  …wrong wording for a send" "$LAST_OUT"
 [ ! -s "$STUB_LOG" ] && ok "  …no card" || fail "  …a card went up"
+
+# ── "Ask, then continue" (owner decision 2026-11-12) ───────────────────────
+# When the person's signed-in profile cannot open, Hermes's browser_exec runs
+# nothing and tells the model to ask them; a retry carrying
+# allow_signed_out=true then runs in a fresh browser signed in as nobody. The
+# rule "only after they said yes" was the model's to keep. Here the yes is a
+# tap: the call's own ARGUMENT raises a card, one yes covers the conversation,
+# a no blocks, and a turn nobody is at is refused without a card or a note.
+echo "browser: continue signed out? (allow_signed_out)"
+so_exec() { # so_exec <session> <flag as JSON, or -> <code> → a browser_exec payload
+  python3 -c 'import json,sys
+ti = {"code": sys.argv[3]}
+if sys.argv[2] != "-":
+    ti["allow_signed_out"] = json.loads(sys.argv[2])
+print(json.dumps({"tool_name": "browser_exec", "session_id": sys.argv[1], "tool_input": ti}))' "$1" "$2" "$3"
+}
+so_cards() { grep -c "^browser signed-out	" "$STUB_LOG" 2>/dev/null; }
+so_grant() { # so_grant <session> → 0 when the grant file holds that conversation's yes
+  python3 -c 'import json,sys
+try: g = json.load(open(sys.argv[1])).get("grants", {})
+except Exception: g = {}
+sys.exit(0 if (sys.argv[2] + "|signed_out") in g else 1)' "$MOE_HOME/gate/session-sends.json" "$1"
+}
+READS='new_tab("https://www.amazon.com/gp/css/order-history")
+wait_for_load()
+print(page_info()[:4000])'
+person_turn; at_mac
+export STUB_ANSWER=yes
+
+# The flag absent, false, or anything the tool itself would not run as true:
+# nothing is asked. (Asserted first, so the cards below are the flag's doing.)
+: >"$STUB_LOG"; rm -rf "$MOE_HOME/gate" "$MOE_HOME/inbox"
+run "browser_exec, no allow_signed_out, a read → pass" 0 no "$(so_exec so-0 - "$READS")"
+run "browser_exec, allow_signed_out false → pass" 0 no "$(so_exec so-0 false "$READS")"
+run "browser_exec, allow_signed_out \"false\" → pass" 0 no "$(so_exec so-0 '"false"' "$READS")"
+run "browser_exec, allow_signed_out null → pass" 0 no "$(so_exec so-0 null "$READS")"
+run "browser_exec, allow_signed_out \"yes\" (the tool reads that as false) → pass" 0 no "$(so_exec so-0 '"yes"' "$READS")"
+run "browser_exec, allow_signed_out 1 (the tool reads that as false) → pass" 0 no "$(so_exec so-0 1 "$READS")"
+[ ! -s "$STUB_LOG" ] && ok "  …none of them raised a card" || fail "  …a card with no signed-out request" "$(cat "$STUB_LOG")"
+
+# true: the card, even though the script only reads.
+: >"$STUB_LOG"; : >"$STUB_LOG.headline"
+run "browser_exec, allow_signed_out true, a read → the card, approved" 0 no "$(so_exec so-1 true "$READS")"
+[ "$(so_cards)" = 1 ] && ok "  …one signed-out card went up" || fail "  …no signed-out card: the model's word was taken for the person's yes" "$(cat "$STUB_LOG")"
+grep -qx "Moe can’t open your signed-in browser. Continue signed out?" "$STUB_LOG.headline" \
+  && ok "  …asking: Moe can’t open your signed-in browser. Continue signed out?" || fail "  …wrong headline" "$(cat "$STUB_LOG.headline")"
+stub_called_with "done as nobody, not as you" && ok "  …saying what signed out means" || fail "  …the card does not say it is not them" "$(cat "$STUB_LOG")"
+grep -q "	session$" "$STUB_LOG" && ok "  …as a card whose yes covers the conversation (kind session)" || fail "  …wrong kind" "$(cat "$STUB_LOG")"
+[ "$(so_cards)" = 1 ] && ! grep -qi "because\|profile is locked\|(.*reason" "$STUB_LOG" && ok "  …and inventing no reason the hook was never told" || fail "  …the card states a reason" "$(cat "$STUB_LOG")"
+so_grant so-1 && ok "  …the yes is written for this conversation" || fail "  …no grant written" "$(cat "$MOE_HOME/gate/session-sends.json" 2>&1)"
+grep -q "allowed-session	tool=browser_exec	to=a signed-out browser	session=so-1" "$MOE_HOME/logs/confirm-hook.log" && ok "  …and logged as a session grant" || fail "  …not logged" "$(tail -2 "$MOE_HOME/logs/confirm-hook.log")"
+: >"$STUB_LOG"
+run "…the next signed-out call, same conversation → no card" 0 no "$(so_exec so-1 true 'goto_url("https://example.com/")
+print(page_info())')"
+[ ! -s "$STUB_LOG" ] && ok "  …one yes covers the conversation" || fail "  …asked again" "$(cat "$STUB_LOG")"
+: >"$STUB_LOG"
+run "…another conversation → asks for itself" 0 no "$(so_exec so-2 true "$READS")"
+[ "$(so_cards)" = 1 ] && ok "  …the yes did not travel to another conversation" || fail "  …another conversation rode on the first one's yes" "$(cat "$STUB_LOG")"
+
+# The string forms Hermes coerces to true AFTER this hook has run.
+for v in '"true"' '"True"' '" TRUE "'; do
+  : >"$STUB_LOG"; rm -rf "$MOE_HOME/gate"
+  run "browser_exec, allow_signed_out $v (a string Hermes runs as true) → the card" 0 no "$(so_exec so-3 "$v" "$READS")"
+  [ "$(so_cards)" = 1 ] && ok "  …asked" || fail "  …the string form walked past the gate" "$(cat "$STUB_LOG")"
+done
+
+# No: blocked, nothing remembered, and the next try asks again.
+: >"$STUB_LOG"; rm -rf "$MOE_HOME/gate"
+STUB_ANSWER=no run "browser_exec, allow_signed_out true, answered no → blocked" 2 yes "$(so_exec so-4 true "$READS")"
+[ "$(so_cards)" = 1 ] && ok "  …the card went up" || fail "  …blocked without asking" "$(cat "$STUB_LOG")"
+said "said no to carrying on signed out" && said "nothing ran" && ok "  …and the model is told the person said no, and nothing ran" || fail "  …wrong refusal" "$LAST_OUT"
+so_grant so-4 && fail "  …a no was remembered as a yes" "$(cat "$MOE_HOME/gate/session-sends.json")" || ok "  …no grant written"
+: >"$STUB_LOG"
+run "…asked again in the same conversation → the card again" 0 no "$(so_exec so-4 true "$READS")"
+[ "$(so_cards)" = 1 ] && ok "  …a no does not silence the question" || fail "  …no card after a no" "$(cat "$STUB_LOG")"
+
+# "Always allow" on browser_exec was an answer about what it presses. The
+# policy is proven live first (a Buy click runs unasked), or this checks nothing.
+: >"$STUB_LOG"; rm -rf "$MOE_HOME/gate"; mkdir -p "$MOE_HOME/gate"
+printf '{"version":1,"tools":{"browser_exec":{"decision":"run"}}}' >"$MOE_HOME/gate/policy.json"
+run "browser_exec always-allowed: Buy now → runs unasked (the policy is live)" 0 no "$(so_exec so-5 - 'click("text=Buy now")')"
+[ ! -s "$STUB_LOG" ] && ok "  …no card: the allow is in force" || fail "  …the policy fixture is not in force, so the next check proves nothing" "$(cat "$STUB_LOG")"
+run "browser_exec always-allowed, allow_signed_out true → still asks" 0 no "$(so_exec so-5 true "$READS")"
+[ "$(so_cards)" = 1 ] && ok "  …'Always allow' does not answer who the browser is" || fail "  …an always-allow silenced the signed-out question" "$(cat "$STUB_LOG")"
+rm -f "$MOE_HOME/gate/policy.json"
+
+# "Allow everything this session", pressed on a post, was a yes to what Moe
+# presses while the browser was them.
+: >"$STUB_LOG"; rm -rf "$MOE_HOME/gate"
+STUB_ANSWER=all run "a post, answered Allow everything this session" 0 no \
+  '{"tool_name":"browser_exec","session_id":"so-6","tool_input":{"code":"goto_url(\"https://x.com/home\")\nclick(\"[data-testid=tweetButtonInline]\")"}}'
+: >"$STUB_LOG"
+run "…then allow_signed_out true, same conversation → still asks" 0 no "$(so_exec so-6 true "$READS")"
+[ "$(so_cards)" = 1 ] && ok "  …'everything' given on a post does not cover going signed out" || fail "  …rode on Allow everything" "$(cat "$STUB_LOG")"
+
+# One call that goes signed out AND buys: one card, saying both; the yes is
+# for the browser only, so the next purchase asks as a purchase — in words
+# that no longer imply the person's account.
+: >"$STUB_LOG"; rm -rf "$MOE_HOME/gate"
+run "allow_signed_out true + Buy now in one call → the signed-out card" 0 no "$(so_exec so-7 true 'click("text=Buy now")')"
+[ "$(so_cards)" = 1 ] && [ "$(grep -c "^browser pay	" "$STUB_LOG")" = 0 ] && ok "  …one card, the signed-out one" || fail "  …wrong cards" "$(cat "$STUB_LOG")"
+[ "$(so_cards)" = 1 ] && stub_called_with "pay for, buy or book" && ok "  …which also says the call may buy something" || fail "  …the purchase rode through unsaid" "$(cat "$STUB_LOG")"
+: >"$STUB_LOG"
+run "…then Buy now again, still signed out → the pay card" 0 no "$(so_exec so-7 true 'click("text=Buy now")')"
+[ "$(grep -c "^browser pay	" "$STUB_LOG")" = 1 ] && [ "$(so_cards)" = 0 ] && ok "  …the signed-out yes did not buy a payment" || fail "  …a purchase went through on the signed-out yes" "$(cat "$STUB_LOG")"
+stub_called_with "done as nobody, not as you" && ok "  …and the pay card says it is done as nobody" || fail "  …the pay card still implies the person's account" "$(cat "$STUB_LOG")"
+
+# Nobody to tap. A scheduled job, owner away: refused in seconds, no card,
+# and — unlike a held send — no note: there is nothing a later tap could finish.
+: >"$STUB_LOG"; rm -rf "$MOE_HOME/gate" "$MOE_HOME/inbox"; cron_turn; away
+T0=$(date +%s)
+run "cron, allow_signed_out true, owner away → refused" 2 yes "$(so_exec so-cron-1 true "$READS")"
+[ $(( $(date +%s) - T0 )) -lt 30 ] && ok "  …answered in seconds" || fail "  …it waited" "$(( $(date +%s) - T0 )) s"
+[ ! -s "$STUB_LOG" ] && ok "  …no card was opened for nobody" || fail "  …a card went up" "$(cat "$STUB_LOG")"
+said "needs the owner's yes" && said "nobody could be asked and nothing ran" && said "a scheduled job" \
+  && ok "  …says whose yes it needs, that nobody could be asked, and who asked" || fail "  …wrong refusal" "$LAST_OUT"
+said "report what is waiting" && ok "  …and tells the job to report what is waiting" || fail "  …no instruction to report" "$LAST_OUT"
+[ "$(held_notes)" = 0 ] && ok "  …and nothing was put in the inbox" || fail "  …a note with no do-it went to the inbox" "$(ls "$MOE_HOME/inbox" 2>&1)"
+so_grant so-cron-1 && fail "  …a refused job left a grant behind" || ok "  …and no grant was written"
+grep -q "refused	tool=browser_exec	to=a signed-out browser" "$MOE_HOME/logs/confirm-hook.log" && ok "  …logged as refused" || fail "  …not logged" "$(tail -2 "$MOE_HOME/logs/confirm-hook.log")"
+# A scheduled job with the owner at the Mac: there is someone to tap, so the card, saying who asked.
+: >"$STUB_LOG"; : >"$STUB_LOG.life"; rm -rf "$MOE_HOME/gate"; cron_turn; at_mac
+run "cron, allow_signed_out true, owner at the Mac → the card" 0 no "$(so_exec so-cron-2 true "$READS")"
+[ "$(so_cards)" = 1 ] && grep -q "^origin=a scheduled job " "$STUB_LOG.life" && ok "  …a card, labelled as a scheduled job's" || fail "  …no labelled card" "$(cat "$STUB_LOG" "$STUB_LOG.life")"
+STUB_ANSWER=expire run "…and nobody answers it → refused, said as that" 2 yes "$(so_exec so-cron-3 true "$READS")"
+said "nobody answered" && said "nothing ran in a signed-out browser" && ok "  …'nobody answered', and nothing ran signed out" || fail "  …wrong expiry wording" "$LAST_OUT"
+person_turn
+rm -rf "$MOE_HOME/gate" "$MOE_HOME/inbox"
+
 unset HERMES_TOOL_BRIDGE_SOCKET HERMES_TOOL_BRIDGE_TOKEN
 kill $BRIDGE_PID 2>/dev/null; wait $BRIDGE_PID 2>/dev/null
 rm -f "$MOE_HOME/presence.json"
@@ -3262,6 +3434,214 @@ run "S2: ls with a glob still runs" 0 no \
 run "S2: security list-keychains still runs" 0 no \
   '{"tool_name":"terminal","tool_input":{"command":"security list-keychains"}}'
 rm -rf "$MOE_HOME/cloud" "$MOE_HOME/gate/session-sends.json" "$WORK/innocent.txt"
+
+# ---------------------------------------------------------------------------
+# W1-A (2026-11-12): the gate protects itself by what a path RESOLVES to.
+#
+# ~/.moe has been a link since 0.3.5. The home is
+# ~/Library/Application Support/Moe, and the app exports THAT as MOE_HOME
+# (Sources/Moe/main.swift) — but Layer 0 recognised its own files only by the
+# substring /.moe/. Measured against a scratch home before the fix, with
+# MOE_HOME set either way, every "refused" row below that does not spell the
+# link PASSED: no refusal, no dialog. 64 of 94 in the reproduction.
+#
+# A scratch HOME, so both spellings exist and neither is this Mac's: the real
+# directory with a space in it, ~/.moe linking to it, and two unrelated links
+# (one at the home, one at hermes/) that nothing in the hook has heard of.
+# Run three times — MOE_HOME as the app sets it, as the link, and unset.
+# ---------------------------------------------------------------------------
+echo "W1-A: the gate, by what a path resolves to"
+W1="$WORK/w1/home"
+W1_REAL="$W1/Library/Application Support/Moe"
+mkdir -p "$W1_REAL/tools" "$W1_REAL/hermes/hooks" "$W1_REAL/.claude" "$W1_REAL/gate" \
+         "$W1_REAL/notes" "$W1/.hermes" "$W1/Documents"
+for f in tools/confirm.sh tools/gate.sh tools/apple.sh hermes/hooks/confirm-send.sh \
+         hermes/hooks/composio-budget.sh .claude/settings.json gate/policy.json notes/a.md; do
+  echo x >"$W1_REAL/$f"
+done
+ln -s "$W1_REAL" "$W1/.moe"
+ln -s "$W1_REAL" "$W1/shortcut"
+ln -s "$W1_REAL/hermes" "$W1/h"
+ln "$W1_REAL/tools/confirm.sh" "$W1/Documents/innocent.txt"      # a hard link: same inode, no link to follow
+
+# The payload, built by a JSON encoder: these paths carry spaces and quotes.
+w1_call() { # tool key value [key value …]
+  python3 -c 'import json, sys
+a = sys.argv
+print(json.dumps({"tool_name": a[1], "tool_input": dict(zip(a[2::2], a[3::2]))}))' "$@"
+}
+w1_refused() { # name, payload — refused BY LAYER 0 (its own words), and nobody asked
+  : >"$STUB_LOG"
+  run "$W1_AS: $1 → refused" 2 yes "$2"
+  if said "send gate depends on" && [ ! -s "$STUB_LOG" ]; then ok "  …by the gate itself, with no dialog"
+  else fail "  …$W1_AS: $1 was not a Layer 0 refusal" "$LAST_OUT $(cat "$STUB_LOG")"; fi
+}
+w1_passes() { # name, payload — silently: no refusal and no dialog
+  : >"$STUB_LOG"
+  run "$W1_AS: $1 → passes" 0 no "$2"
+  [ ! -s "$STUB_LOG" ] && ok "  …and nobody was asked" || fail "  …$W1_AS: $1 raised a dialog" "$(cat "$STUB_LOG")"
+}
+w1_t() { w1_call terminal command "$1"; }
+w1_w() { w1_call write_file path "$1" content "exit 0"; }
+
+W1_KEEP_HOME="$HOME"; W1_KEEP_MOE="$MOE_HOME"; W1_KEEP_HERMES="$HERMES_HOME"
+R="$W1_REAL"
+R_ESC="$(printf '%s' "$R" | sed 's/ /\\ /g')"
+for W1_AS in "MOE_HOME=real" "MOE_HOME=link" "MOE_HOME unset"; do
+  export HOME="$W1" HERMES_HOME="$W1/.hermes"
+  case "$W1_AS" in
+    "MOE_HOME=real") export MOE_HOME="$W1_REAL" ;;
+    "MOE_HOME=link") export MOE_HOME="$W1/.moe" ;;
+    *)               unset MOE_HOME ;;
+  esac
+
+  # The control: the one spelling that was always refused. If this is not
+  # refused, the rows below say nothing about the fix.
+  w1_refused "terminal > ~/.moe/tools/confirm.sh (the link)" "$(w1_t 'echo x > ~/.moe/tools/confirm.sh')"
+
+  # The five the audit named.
+  w1_refused "terminal > <real>/tools/confirm.sh, quoted" "$(w1_t "echo x > \"$R/tools/confirm.sh\"")"
+  w1_refused "terminal > <real>/hermes/hooks/confirm-send.sh" "$(w1_t "echo x > \"$R/hermes/hooks/confirm-send.sh\"")"
+  w1_refused "write_file <real>/hermes/hooks/composio-budget.sh" "$(w1_w "$R/hermes/hooks/composio-budget.sh")"
+  w1_refused "write_file <real>/.claude/settings.json" "$(w1_w "$R/.claude/settings.json")"
+  w1_refused "mv <real>/hermes/hooks /tmp/off" "$(w1_t "mv \"$R/hermes/hooks\" /tmp/off")"
+
+  # The space, each way a shell lets it be written.
+  w1_refused "terminal, the space backslashed" "$(w1_t "echo x > $R_ESC/tools/confirm.sh")"
+  w1_refused "terminal, single-quoted" "$(w1_t "echo x > '$R/tools/confirm.sh'")"
+  w1_refused "terminal, the quote closed mid-path" "$(w1_t "echo x > \"$R\"/tools/confirm.sh")"
+  w1_refused "terminal, quoted .claude/settings.json" "$(w1_t "echo x > \"$R/.claude/settings.json\"")"
+
+  # ~ and $HOME in front of the real path.
+  w1_refused "terminal ~/\"Library/…\"/confirm-send.sh" \
+    "$(w1_t 'echo x > ~/"Library/Application Support/Moe/hermes/hooks/confirm-send.sh"')"
+  w1_refused "terminal ~/Library/Application\\ Support/…" \
+    "$(w1_t 'echo x > ~/Library/Application\ Support/Moe/tools/confirm.sh')"
+  w1_refused 'terminal "$HOME/Library/…/confirm.sh"' \
+    "$(w1_t 'echo x > "$HOME/Library/Application Support/Moe/tools/confirm.sh"')"
+  w1_refused 'terminal "${HOME}/Library/…/settings.json"' \
+    "$(w1_t 'echo x > "${HOME}/Library/Application Support/Moe/.claude/settings.json"')"
+  w1_refused "write_file ~/Library/…/.claude/settings.json" \
+    "$(w1_w '~/Library/Application Support/Moe/.claude/settings.json')"
+  w1_refused 'write_file $HOME/Library/…/composio-budget.sh' \
+    "$(w1_w '$HOME/Library/Application Support/Moe/hermes/hooks/composio-budget.sh')"
+
+  # A detour through `..`, and redundant separators.
+  w1_refused "terminal <real>/notes/../tools/confirm.sh" "$(w1_t "echo x > \"$R/notes/../tools/confirm.sh\"")"
+  w1_refused "write_file <real>/notes/../.claude/settings.json" "$(w1_w "$R/notes/../.claude/settings.json")"
+  w1_refused "write_file <real>//hermes/./hooks/composio-budget.sh" "$(w1_w "$R//hermes/./hooks/composio-budget.sh")"
+  w1_refused "write_file up and back down through the user directory" \
+    "$(w1_w "$W1/Documents/../Library/Application Support/Moe/.claude/settings.json")"
+
+  # A relative path, after `cd` or against a cwd argument.
+  w1_refused "cd <real> && > tools/confirm.sh" "$(w1_t "cd \"$R\" && echo x > tools/confirm.sh")"
+  w1_refused "cd <real>/hermes && > hooks/composio-budget.sh" \
+    "$(w1_t "cd \"$R/hermes\" && echo x > hooks/composio-budget.sh")"
+  w1_refused "cd <real, backslashed>; > .claude/settings.json" \
+    "$(w1_t "cd $R_ESC; echo x > .claude/settings.json")"
+  w1_refused "cd ~/Library/…/Moe && rm -rf tools" \
+    "$(w1_t 'cd ~/Library/Application\ Support/Moe && rm -rf tools')"
+  w1_refused "cd <real>/tools && chmod -R 000 ." "$(w1_t "cd \"$R/tools\" && chmod -R 000 .")"
+  w1_refused "cd <real>/.. && mv Moe /tmp/off" "$(w1_t "cd \"$R/..\" && mv Moe /tmp/off")"
+  w1_refused "write_file .claude/settings.json, cwd=<real>" \
+    "$(w1_call write_file path .claude/settings.json cwd "$R" content x)"
+  w1_refused "write_file hooks/composio-budget.sh, cwd=<real>/hermes" \
+    "$(w1_call write_file path hooks/composio-budget.sh cwd "$R/hermes" content x)"
+  w1_refused "write_file gate/policy.json where Hermes says the call runs" \
+    "$(python3 -c 'import json, sys
+print(json.dumps({"tool_name": "write_file", "cwd": sys.argv[1], "tool_input": {"path": "gate/policy.json", "content": "{}"}}))' "$R")"
+
+  # A DIFFERENT link at the home — a name no list could hold.
+  w1_refused "terminal > <other link>/tools/confirm.sh" "$(w1_t "echo x > $W1/shortcut/tools/confirm.sh")"
+  w1_refused "terminal > <link at hermes>/hooks/composio-budget.sh" "$(w1_t "echo x > $W1/h/hooks/composio-budget.sh")"
+  w1_refused "write_file <other link>/.claude/settings.json" "$(w1_w "$W1/shortcut/.claude/settings.json")"
+  w1_refused "write_file <link at hermes>/hooks/new-hook.sh (not there yet)" "$(w1_w "$W1/h/hooks/new-hook.sh")"
+  w1_refused "mv <link at hermes>/hooks /tmp/off" "$(w1_t "mv $W1/h/hooks /tmp/off")"
+  w1_refused "rm -rf <other link>/tools" "$(w1_t "rm -rf $W1/shortcut/tools")"
+  # …a hard link, which has no link to follow — only the inode says so…
+  w1_refused "write_file a hard link to confirm.sh" "$(w1_w "$W1/Documents/innocent.txt")"
+  # …and a glob, which the shell expands where no string test sees it.
+  w1_refused "terminal > <real>/too?s/conf*.sh" "$(w1_t "echo x > \"$R\"/too?s/conf*.sh")"
+  w1_refused "terminal > ~/Library/App*/Moe/.cl*/settings.json" \
+    "$(w1_t 'echo x > ~/Library/App*/Moe/.cl*/settings.json')"
+
+  # The filesystem is case-insensitive; a file that does not exist yet has no inode.
+  w1_refused "write_file <real, another case>/.claude/settings.json" \
+    "$(w1_w "$W1/library/application support/MOE/.claude/SETTINGS.json")"
+  w1_refused "write_file <real>/hermes/hooks/new-hook.sh (not there yet)" "$(w1_w "$R/hermes/hooks/new-hook.sh")"
+  w1_refused "write_file <real>/tools/gate.sh" "$(w1_w "$R/tools/gate.sh")"
+  w1_refused "patch <real>/hermes/hooks/confirm-send.sh" \
+    "$(w1_call patch file_path "$R/hermes/hooks/confirm-send.sh" patch "-x")"
+
+  # A directory that CONTAINS a gate file, moved, deleted or re-moded.
+  w1_refused "mv <real>/hermes /tmp/off" "$(w1_t "mv \"$R/hermes\" /tmp/off")"
+  w1_refused "mv <real> (the home itself)" "$(w1_t "mv \"$R\" /tmp/off")"
+  w1_refused "mv ~/Library/Application\\ Support/Moe" "$(w1_t 'mv ~/Library/Application\ Support/Moe /tmp/off')"
+  w1_refused "rm -rf <real>/tools" "$(w1_t "rm -rf \"$R/tools\"")"
+  w1_refused "/bin/rm -rf <real>/tools/" "$(w1_t "/bin/rm -rf \"$R/tools/\"")"
+  w1_refused "chmod 000 <real>/tools" "$(w1_t "chmod 000 \"$R/tools\"")"
+  w1_refused "chmod -R 000 <real>/.claude" "$(w1_t "chmod -R 000 \"$R/.claude\"")"
+  w1_refused "chflags uchg <real>/hermes" "$(w1_t "chflags -R uchg \"$R/hermes\"")"
+  w1_refused "echo <real>/hermes | xargs rm -rf" "$(w1_t "echo \"$R/hermes\" | xargs rm -rf")"
+  w1_refused "find <real>/tools -delete" "$(w1_t "find \"$R/tools\" -name 'confirm*' -delete")"
+  w1_refused "mv the directory the home sits in" "$(w1_t "mv \"$W1/Library/Application Support\" /tmp/off")"
+  w1_refused "rm -rf ~/Library" "$(w1_t 'rm -rf ~/Library')"
+  w1_refused "sudo chmod -R 000 ~/Library" "$(w1_t 'sudo chmod -R 000 ~/Library')"
+  w1_refused "python: shutil.rmtree(<real>/hermes)" \
+    "$(w1_call execute_code code "import shutil; shutil.rmtree('$R/hermes')")"
+  w1_refused "python: os.rename(<real>/tools, …)" \
+    "$(w1_call execute_code code "import os; os.rename(\"$R/tools\", \"/tmp/off\")")"
+
+  # And none of it costs the person anything. <home>/tools is the toolbelt,
+  # the home is where their notes live, and a directory above the home is
+  # only protected from being taken away. Every one of these must pass with
+  # no refusal and no dialog — a rule that only adds friction is the known
+  # way this file goes wrong.
+  w1_passes "run apple.sh by the real path" "$(w1_t "\"$R/tools/apple.sh\" calendar today")"
+  w1_passes "run apple.sh by ~/Library/…" "$(w1_t '~/Library/Application\ Support/Moe/tools/apple.sh calendar today')"
+  w1_passes "run apple.sh by the link" "$(w1_t '~/.moe/tools/apple.sh calendar today')"
+  w1_passes "run apple.sh by an unrelated link" "$(w1_t "$W1/shortcut/tools/apple.sh calendar today")"
+  w1_passes "cd <real>/tools && ./apple.sh" "$(w1_t "cd \"$R/tools\" && ./apple.sh calendar today")"
+  w1_passes "chmod +x <real>/tools/apple.sh" "$(w1_t "chmod +x \"$R/tools/apple.sh\"")"
+  w1_passes "ls <real>/tools" "$(w1_t "ls -la \"$R/tools\"")"
+  w1_passes "write a note under the real home" "$(w1_w "$R/notes/b.md")"
+  w1_passes "cat a note under the real home" "$(w1_t "cat \"$R/notes/a.md\"")"
+  w1_passes "rm a note under the real home" "$(w1_t "rm \"$R/notes/a.md\"")"
+  w1_passes "cd <real> && rm notes/a.md" "$(w1_t "cd \"$R\" && rm notes/a.md")"
+  w1_passes "find . -name '*.md' where Hermes runs the call (the home)" \
+    "$(python3 -c 'import json, sys
+print(json.dumps({"tool_name": "terminal", "cwd": sys.argv[1], "tool_input": {"command": "find . -name \"*.md\""}}))' "$R")"
+  w1_passes "cd ~ && rm old.txt" "$(w1_t 'cd ~ && rm old.txt')"
+  w1_passes "mv a download into ~" "$(w1_t 'mv ~/Downloads/a.pdf ~')"
+  w1_passes "mv a file into ~/Library/Application Support" \
+    "$(w1_t 'mv /tmp/x.plist ~/Library/Application\ Support/')"
+  w1_passes "find ~ -name '*.pdf'" "$(w1_t "find ~ -name '*.pdf'")"
+  w1_passes "ls ~/Library/Application Support" "$(w1_t 'ls ~/Library/Application\ Support')"
+  w1_passes "rm -rf a neighbour, ~/Library/Application Support/Other" \
+    "$(w1_t 'rm -rf ~/Library/Application\ Support/Other')"
+  w1_passes "rm in Moe Dev's home, which only begins the same way" \
+    "$(w1_t 'rm ~/Library/Application\ Support/Moe\ Dev/notes/a.md')"
+  w1_passes "write_file ~/Documents/plan.md" "$(w1_w '~/Documents/plan.md')"
+  w1_passes "a project's own .claude/settings.json" "$(w1_w "$W1/Documents/proj/.claude/settings.json")"
+done
+export HOME="$W1_KEEP_HOME" MOE_HOME="$W1_KEEP_MOE" HERMES_HOME="$W1_KEEP_HERMES"
+
+# A home that is NEITHER spelling — this suite's own $MOE_HOME, the away
+# machine's $HERMES_HOME/moe-home — reached by its path and by a link to it.
+W1_AS="relocated home"
+mkdir -p "$MOE_HOME/tools" "$MOE_HOME/hermes/hooks" "$MOE_HOME/.claude" "$MOE_HOME/notes"
+echo x >"$MOE_HOME/tools/apple.sh"; echo x >"$MOE_HOME/notes/a.md"
+ln -s "$MOE_HOME" "$WORK/w1/elsewhere"
+w1_refused "write_file \$MOE_HOME/.claude/settings.json" "$(w1_w "$MOE_HOME/.claude/settings.json")"
+w1_refused "write_file \$MOE_HOME/hermes/hooks/composio-budget.sh" "$(w1_w "$MOE_HOME/hermes/hooks/composio-budget.sh")"
+w1_refused "terminal > <a link at it>/tools/confirm.sh" "$(w1_t "echo x > $WORK/w1/elsewhere/tools/confirm.sh")"
+w1_refused "write_file <a link at it>/.claude/settings.json" "$(w1_w "$WORK/w1/elsewhere/.claude/settings.json")"
+w1_refused "mv \$MOE_HOME/hermes /tmp/off" "$(w1_t "mv $MOE_HOME/hermes /tmp/off")"
+w1_refused "rm -rf <a link at it>/tools" "$(w1_t "rm -rf $WORK/w1/elsewhere/tools")"
+w1_refused "rm -rf the directory it sits in" "$(w1_t "rm -rf $WORK")"
+w1_passes "run \$MOE_HOME/tools/apple.sh" "$(w1_t "$MOE_HOME/tools/apple.sh calendar today")"
+w1_passes "rm a note in it" "$(w1_t "rm $WORK/w1/elsewhere/notes/a.md")"
+rm -rf "$WORK/w1" "$MOE_HOME/tools" "$MOE_HOME/hermes" "$MOE_HOME/.claude" "$MOE_HOME/notes"
 
 echo
 echo "$PASS passed, $FAIL failed"

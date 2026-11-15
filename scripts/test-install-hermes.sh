@@ -14,6 +14,7 @@
 #
 # KEEP=1 keeps the scratch dir (and its uv cache) for a look afterwards.
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 # A fresh directory each run. The default used to be one particular agent
@@ -25,6 +26,12 @@ export MOE_HOME="$SCRATCH/moe-home"
 export HERMES_HOME="$SCRATCH/hermes-home"
 export MOE_BIN_DIR="$SCRATCH/bin"
 export UV_PYTHON_INSTALL_DIR="$SCRATCH/uv-python"
+# uv also links every Python it installs into its executable dir, which is the
+# real ~/.local/bin unless told otherwise. Pinning only the install dir left a
+# `python3.14` in the developer's ~/.local/bin pointing into this run's mktemp
+# directory (found 2026-11-13: dangling the moment macOS cleans /var/folders).
+export UV_PYTHON_BIN_DIR="$SCRATCH/uv-python-bin"
+export UV_TOOL_BIN_DIR="$SCRATCH/uv-tool-bin"
 export UV_CACHE_DIR="$SCRATCH/uv-cache"
 export MOE_SECURITY_BIN="$ROOT/scripts/test-stubs/security"
 export MOE_STUB_LOG="$SCRATCH/security-calls.log"

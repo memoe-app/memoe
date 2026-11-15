@@ -132,6 +132,60 @@ public enum HumanEventRule {
     }
 }
 
+// MARK: - Where the control is, for the hit-test
+
+/// A control's place, as AppKit itself reports it: the window it is in, and
+/// its rectangle in that window's own coordinates (bottom-left origin, y up)
+/// — `view.convert(view.bounds, to: nil)` on a view laid out behind the
+/// control, read at the moment of the press. A mouse-up's
+/// `NSEvent.locationInWindow` is in the same coordinates, so nothing is
+/// flipped and nothing depends on a title bar, a toolbar, the camera cutout
+/// or the backing scale.
+///
+/// **Why not SwiftUI's `.global` frame, which this used to be** (measured
+/// 2026-11-12, macOS 27.2, a 480-pt-wide SwiftUI sheet hosted the way
+/// `ReacceptPrompt` hosts it, the Agree button 60×24 at the bottom right):
+///
+/// | window                         | window h | content h | `.global` y | y flipped by content h |
+/// |--------------------------------|----------|-----------|-------------|------------------------|
+/// | `[.titled, .closable]`         | 170      | 138       | **122**     | **90**                 |
+/// | `[.borderless]`                | 138      | 138       | 90          | 90                     |
+/// | `[.titled, .fullSizeContentView]` | 138   | 138       | 106         | 106                    |
+///
+/// `.global` is measured from the top of the WINDOW, title bar included; the
+/// old hit-test flipped the click by the CONTENT view's height. In a plain
+/// titled window the two differ by the title bar (32 pt), which is taller
+/// than the button (24 pt) — so no click a person could make on the re-accept
+/// window's Agree was ever "inside" it, and every one fell to Touch ID. The
+/// Settings, Onboarding and main windows are full-size-content and matched by
+/// luck. AppKit's own numbers need no luck: the probe row above reads
+/// (396, 24, 60, 24) in all three.
+public struct ControlPlace: Equatable, Sendable {
+    /// `NSWindow.windowNumber` of the window the control is in.
+    public var windowNumber: Int
+    /// The control's rectangle in that window's coordinates (y up).
+    public var rectInWindow: CGRect
+    public init(windowNumber: Int, rectInWindow: CGRect) {
+        self.windowNumber = windowNumber; self.rectInWindow = rectInWindow
+    }
+
+    /// A mouse-up at `locationInWindow` (the event's own field), delivered to
+    /// window `eventWindow`, landed on this control. A click at the same
+    /// point of a DIFFERENT window did not.
+    public func contains(click locationInWindow: CGPoint, eventWindow: Int) -> Bool {
+        eventWindow == windowNumber && !rectInWindow.isEmpty && rectInWindow.contains(locationInWindow)
+    }
+}
+
+extension HumanEventRule {
+    /// `Facts.insideControl`, from what the press recorded. No place (the
+    /// control is not in a window, or was given no probe) is never inside.
+    public static func insideControl(click locationInWindow: CGPoint, eventWindow: Int,
+                                     place: ControlPlace?) -> Bool {
+        place?.contains(click: locationInWindow, eventWindow: eventWindow) ?? false
+    }
+}
+
 // MARK: - The accessibility fallback (D9.14)
 
 /// Proves the person is there when the triggering event did not (VoiceOver,
@@ -150,8 +204,180 @@ public enum HumanGate {
     public static func allow(_ verdict: HumanEventRule.Verdict,
                              reason: String,
                              authenticator: PersonAuthenticator) async -> Bool {
-        if verdict.isPerson { return true }
-        return await authenticator.confirmPerson(reason: reason)
+        await prove(verdict, reason: reason, authenticator: authenticator) != nil
+    }
+
+    /// The proof a person's press carries, or nil. Never asks anybody.
+    public static func proof(_ verdict: HumanEventRule.Verdict) -> PersonProof? {
+        verdict.isPerson ? PersonProof() : nil
+    }
+
+    /// `allow`, returning what was proved: a person's press, or — for a
+    /// press that was not provably one — the person authenticating.
+    public static func prove(_ verdict: HumanEventRule.Verdict,
+                             reason: String,
+                             authenticator: PersonAuthenticator) async -> PersonProof? {
+        if let proof = proof(verdict) { return proof }
+        return await authenticator.confirmPerson(reason: reason) ? PersonProof() : nil
+    }
+}
+
+/// That a person was just there: a `.person` verdict, or a passed
+/// authentication. It can only be made in this file, by `HumanGate`, and it
+/// carries nothing — it is not a credential and cannot be written down, sent
+/// or parsed. Its one use is to open a `ConsentChain`.
+public struct PersonProof: Sendable {
+    fileprivate init() {}
+}
+
+// MARK: - One press, and what follows from it (D9.14)
+
+/// One verified press on a consent control, standing in for the steps that
+/// are **consequences of that same act** — and for nothing else.
+///
+/// The owner, 2026-11-12, Settings › Away → Turn it back on: press, Touch ID,
+/// Agree, Touch ID, Google, Touch ID, press again, Touch ID. Two of those four
+/// prompts were this rule failing to recognise his own clicks (`ControlPlace`
+/// above). The other two were steps the APP took because he pressed Agree —
+/// registering this Mac's key at a Google sign-in, and then doing the thing
+/// he had pressed for — each of which asked "is a person pressing this?" of
+/// an event that could not exist, because no press starts them.
+///
+/// So the press that was verified is carried forward, narrowly:
+///
+/// - **Made only from a `PersonProof`** — a `.person` verdict or a passed
+///   authentication (`HumanGate`). No initialiser takes a string, a file, a
+///   flag or a date. (This is a boundary against what drives the app from
+///   outside. Code compiled into the app can construct a verdict, as it could
+///   always have called the action directly; that is what review is for.)
+/// - **Held in memory, on the task the press started** (`ConsentChain.current`
+///   is a task-local, bound for the duration of the control's own action).
+///   There is no table to look one up in, nothing on disk, no CLI verb, URL
+///   scheme, tool or notification that reads or sets it. A different press,
+///   a timer, a launch check and an agent-driven action each run on a task
+///   that has none.
+/// - **Single-purpose**: a chain covers the steps `consequences(of:)` lists
+///   for the control that was pressed, and no other control. That table is
+///   code, not a parameter.
+/// - **Single-use**: each step is covered once. A second request for the
+///   same step is refused and takes the ordinary route (authenticate).
+/// - **Short-lived**: a step must begin within `window` seconds of the last
+///   moment this chain knew the person was there — the press, or the return
+///   of the Google sign-in it covered — and never later than `ceiling` after
+///   the press. Expired, it covers nothing.
+///
+/// **What an agent driving the UI can and cannot do after this.** It still
+/// cannot press Agree, the switches, or Turn it back on: an accessibility
+/// press has no event, a posted event carries the poster's pid, and both get
+/// the authentication sheet, which it cannot pass — `HumanEventRule.classify`
+/// is unchanged. So it cannot open a chain. It cannot borrow one: a chain is
+/// reachable only from code running inside the action of the press that made
+/// it, and an agent's press of any OTHER control starts a new action with no
+/// chain. If it presses a consent control in the seconds after the person
+/// pressed one, its press is judged on its own (no event → authenticate); the
+/// person's chain is not consulted, because the question "was this control
+/// pressed by a person" is never answered by a chain — only "may this step,
+/// which follows from a press already verified, go ahead". What it CAN still
+/// do is what it always could: drive the browser the Google sign-in opens.
+/// That sign-in is not what makes an agreement the person's — the verified
+/// press is — and it opens only inside a chain a person started.
+public final class ConsentChain: @unchecked Sendable {
+
+    /// The chain the current task is running inside, if a person's press on
+    /// a consent control started it.
+    @TaskLocal public static var current: ConsentChain?
+
+    /// The step every Agree may lead to: the Google sign-in that registers
+    /// this Mac's key for agreeing, when the edge has none.
+    public static let keySignIn = "consent-key-sign-in"
+    /// The step the keep-a-copy sheet's Agree leads to: turning the copy on,
+    /// which is what the person pressed for before the sheet appeared.
+    public static let keepACopyTurnOn = "keep-a-copy-turn-on"
+
+    /// The step a press of a "Sign in with Google" button leads to: signing
+    /// in, and recording that the person agreed by doing it (D9.4 — the line
+    /// under every such button says so). Asked for BEFORE the browser opens,
+    /// so the answer is about the press and not about whatever drove Google.
+    public static let signInAcceptance = "sign-in-acceptance"
+    /// The step a press of the problem-reports switch leads to: a signed note
+    /// in `privacy.json` that this yes was a person's, which is the only
+    /// thing launch may later record again on an account that lacks it
+    /// (`ProblemReports.reconcile`).
+    public static let problemReportsYes = "problem-reports-yes"
+
+    /// What may follow from a press of `origin` without asking the person
+    /// again. Anything not listed here asks.
+    public static func consequences(of origin: String) -> Set<String> {
+        switch origin {
+        case "keep-a-copy-agree": return [keySignIn, keepACopyTurnOn]
+        case "upgrade-agree", "reaccept-agree": return [keySignIn]
+        // The problem-reports switch records an acceptance too, and can meet
+        // a Mac whose key is not on record.
+        //
+        // All three controls that make that one call, not just the first.
+        // The welcome's switch and "Confirm it's you" under the Settings
+        // switch reach the same `ProblemReports.turn`, and were left out: the
+        // press was verified, carried all the way to the sign-in, and then
+        // covered nothing — so the person who had just clicked was asked for
+        // Touch ID anyway.
+        case "privacy-problem-reports", "privacy-problem-reports-confirm",
+             "onboarding-problem-reports":
+            return [keySignIn, problemReportsYes]
+        // The three buttons that sign this Mac in to a Memoe account: the
+        // Away page's "Sign in", a plan's "Get …" on a Mac with no account,
+        // and a brokered connection's first Connect.
+        case "away-sign-in", "plan-sign-in", "connect-sign-in":
+            return [signInAcceptance]
+        default: return []
+        }
+    }
+
+    /// Seconds a step may begin after the person was last known to be there.
+    public static let window: TimeInterval = 30
+    /// Seconds after the press beyond which the chain covers nothing,
+    /// whatever happened in between (a sign-in left open in the browser).
+    public static let ceiling: TimeInterval = 600
+
+    /// The control the person pressed.
+    public let origin: String
+    private let lock = NSLock()
+    private let born: TimeInterval
+    private var anchor: TimeInterval
+    private var remaining: Set<String>
+    private var renewable: Set<String> = []
+
+    public init(_ proof: PersonProof, origin: String,
+                now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        self.origin = origin
+        self.born = now
+        self.anchor = now
+        self.remaining = Self.consequences(of: origin)
+    }
+
+    /// May `step` go ahead on the strength of this chain's press? Yes once,
+    /// for a step this chain's control leads to, while it is fresh. Asking
+    /// uses it up.
+    public func covers(_ step: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard remaining.contains(step) else { return false }
+        guard now >= anchor, now - anchor <= Self.window, now - born <= Self.ceiling else {
+            // Expired: nothing later may ride on it either.
+            remaining.removeAll(); renewable.removeAll()
+            return false
+        }
+        remaining.remove(step)
+        renewable.insert(step)
+        return true
+    }
+
+    /// A step this chain covered has just finished with the person plainly
+    /// there (they came back from the Google sign-in): the next step's
+    /// `window` is counted from now. Once per covered step; a step the chain
+    /// did not cover renews nothing, and nothing outlives `ceiling`.
+    public func finished(_ step: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        lock.lock(); defer { lock.unlock() }
+        guard renewable.remove(step) != nil, now >= anchor, now - born <= Self.ceiling else { return }
+        anchor = now
     }
 }
 

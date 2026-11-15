@@ -135,3 +135,107 @@ import Testing
         #expect(tail.allSatisfy { $0.opacity < 1 })
     }
 }
+
+/// The same decisions on a Mac whose camera floats in a capsule
+/// (2026-11-12): at rest the island is the hardware and nothing else, and
+/// working is a ring and a word inside the capsule, not a light round it.
+struct CapsuleEarsTests {
+
+    private func inputs(_ f: (inout IslandEars.Inputs) -> Void) -> IslandEars.Inputs {
+        var i = IslandEars.Inputs()
+        i.capsule = true
+        f(&i)
+        return i
+    }
+
+    @Test func atRestNothingIsOut() {
+        let e = IslandEars.of(inputs { _ in })
+        #expect(e.left == nil)
+        #expect(e.right == nil)
+        // The same state on a notch keeps its dot: nothing changed there.
+        let notch = IslandEars.of(IslandEars.Inputs())
+        #expect(notch.right == .presence)
+    }
+
+    @Test func listeningPutsBarsLeftAndTheDotRight() {
+        let e = IslandEars.of(inputs { $0.listening = true })
+        #expect(e.left == .levels)
+        #expect(e.right == .presence)
+    }
+
+    /// The owner's photographs of 2026-11-12 (IMG_0629, IMG_0630): idle, a
+    /// notice unread, and a black run right of the camera holding one white
+    /// dot. At rest a capsule shows nothing, waiting or not.
+    @Test func somethingWaitingAddsNothingAtRest() {
+        let e = IslandEars.of(inputs { $0.waiting = true })
+        #expect(e.left == nil)
+        #expect(e.right == nil)
+        // The dot is still there once the island is out for something else.
+        let busy = IslandEars.of(inputs { $0.waiting = true; $0.listening = true })
+        #expect(busy.left == .levels)
+        #expect(busy.right == .waiting)
+        // A notice arriving still grows it: that is news, not rest.
+        let peek = IslandEars.of(inputs { $0.waiting = true; $0.noticeLine = "Dana replied" })
+        #expect(peek.right == .notice("Dana replied"))
+        // A notch keeps its white dot: nothing changed there.
+        var n = IslandEars.Inputs()
+        n.waiting = true
+        #expect(IslandEars.of(n).right == .waiting)
+    }
+
+    /// The follow-up window: the microphone is open in case you go on, and
+    /// nobody is speaking. Rest — the bars come when somebody is heard.
+    @Test func betweenTurnsNothingIsOutUntilSomebodySpeaks() {
+        let quiet = IslandEars.of(inputs { $0.listening = true; $0.betweenTurns = true })
+        #expect(quiet.left == nil && quiet.right == nil)
+        let heard = IslandEars.of(inputs { $0.listening = true })
+        #expect(heard.left == .levels && heard.right == .presence)
+        // Muted between turns is still said: it is a state the person chose.
+        let muted = IslandEars.of(inputs { $0.listening = true; $0.betweenTurns = true; $0.muted = true })
+        #expect(muted.left == .muted)
+        // A notch is unchanged.
+        var n = IslandEars.Inputs()
+        n.listening = true
+        n.betweenTurns = true
+        #expect(IslandEars.of(n).left == .levels)
+    }
+
+    @Test func workingIsARingAndAWord() {
+        let e = IslandEars.of(inputs { $0.working = true; $0.workingWord = "Thinking" })
+        #expect(e.left == .working)
+        #expect(e.right == .working("Thinking", ring: false))
+        // On a notch, working tucks both ears away: the light runs round it.
+        var n = IslandEars.Inputs()
+        n.working = true
+        n.workingWord = "Thinking"
+        #expect(IslandEars.of(n).left == nil)
+        #expect(IslandEars.of(n).right == nil)
+    }
+
+    @Test func workingWhileMutedKeepsTheWordAndMovesTheRing() {
+        let e = IslandEars.of(inputs { $0.working = true; $0.workingWord = "Working"; $0.muted = true })
+        #expect(e.left == .muted)
+        #expect(e.right == .working("Working", ring: true))
+    }
+
+    @Test func drivingKeepsItsStopAndGainsTheRing() {
+        let e = IslandEars.of(inputs { $0.working = true; $0.workingWord = "Working"; $0.driving = "Using Safari" })
+        #expect(e.left == .working)
+        #expect(e.right == .driving("Using Safari"))
+    }
+
+    @Test func openHasNoEarsOnACapsuleEither() {
+        let e = IslandEars.of(inputs { $0.open = true; $0.listening = true })
+        #expect(e.left == nil && e.right == nil)
+    }
+
+    @Test func theStopChipIsFoundInsideTheCap() {
+        let measure: (String) -> CGFloat = { CGFloat($0.count) * 6 }
+        let right = IslandEars.Right.driving(String(repeating: "x", count: 80))
+        let outer = 29 + CapsuleIsland.maximumRightReach
+        #expect(IslandEars.hitsStop(xFromCentre: outer - 12, notchWidth: 58, right: right,
+                                    maximumReach: CapsuleIsland.maximumRightReach, measure: measure))
+        #expect(!IslandEars.hitsStop(xFromCentre: outer + 2, notchWidth: 58, right: right,
+                                     maximumReach: CapsuleIsland.maximumRightReach, measure: measure))
+    }
+}

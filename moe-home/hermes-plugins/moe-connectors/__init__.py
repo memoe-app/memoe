@@ -156,7 +156,7 @@ try:
     from ._sibling import moeledger as _moeledger
 except ImportError:
     _spec = importlib.util.spec_from_file_location(
-        "moe_connectors_sibling", os.path.join(_PLUGIN_DIR, "_sibling.py"))
+        "connect_serviceors_sibling", os.path.join(_PLUGIN_DIR, "_sibling.py"))
     _module = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_module)
     _moeledger = _module.moeledger
@@ -1029,7 +1029,7 @@ def _maccall():
             logger.info("moe-connectors: maccall.py is not beside this plugin; a detached "
                         "call queues rather than reaching a live Mac")
             return None
-        spec = importlib.util.spec_from_file_location("moe_connectors_maccall", path)
+        spec = importlib.util.spec_from_file_location("connect_serviceors_maccall", path)
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
@@ -1067,7 +1067,7 @@ def _signin():
         path = os.path.join(_PLUGIN_DIR, "signin.py")
         if not os.path.isfile(path):
             return None
-        spec = importlib.util.spec_from_file_location("moe_connectors_signin", path)
+        spec = importlib.util.spec_from_file_location("connect_serviceors_signin", path)
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
@@ -1077,6 +1077,48 @@ def _signin():
             return None
     _SIGNIN = module
     return module
+
+
+_BROWSERSITES = None
+
+
+def _browsersites():
+    """`browsersites.py` beside this file (docs/AWAY-BROWSER.md §2: which sites the
+    cloud browser may stay signed in to), loaded the way `_signin` is, or None."""
+    global _BROWSERSITES
+    if _BROWSERSITES is not None:
+        return _BROWSERSITES
+    try:
+        from . import browsersites as module
+    except ImportError:
+        path = os.path.join(_PLUGIN_DIR, "browsersites.py")
+        if not os.path.isfile(path):
+            return None
+        spec = importlib.util.spec_from_file_location("connect_serviceors_browsersites", path)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            logger.warning("moe-connectors: browsersites.py would not load; the cloud browser "
+                           "keeps every sign-in", exc_info=True)
+            return None
+    _BROWSERSITES = module
+    return module
+
+
+def away_browser_sites(tool_name=None, **kwargs):  # called from away_send_gate
+    """Before a browser tool on the machine: hold the kept profile to the person's
+    list of sites (browsersites.prune). It acts only when the browser is not
+    running -- the cold start of a task -- and never decides the call: it returns
+    nothing, and a failure of its own is logged and the call goes on."""
+    module = _browsersites()
+    if module is None or not module.is_browser_tool(tool_name or kwargs.get("name") or ""):
+        return None
+    try:
+        module.prune(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"), moe_home())
+    except Exception:
+        logger.warning("moe-connectors: the cloud browser's site list could not be applied", exc_info=True)
+    return None
 
 
 def machine_edge():
@@ -1105,6 +1147,10 @@ def sign_in_handler(params=None, **kwargs):
     except Exception as exc:
         logger.warning("moe-connectors: sign-in link failed", exc_info=True)
         out = {"success": False, "error": "could not make a sign-in link: %s" % exc}
+    sites = _browsersites()
+    if out.get("success") and sites is not None:
+        # Whether this sign-in stays is the person's list, made on the Mac.
+        out["kept"] = sites.kept_note(str(params.get("site") or ""), moe_home())
     return json.dumps(out)
 
 
@@ -1146,7 +1192,7 @@ def _awaygate():
                            "plugin, so a send cannot be put to anybody")
             return None
         spec = importlib.util.spec_from_file_location(
-            "moe_connectors_awaygate", path)
+            "connect_serviceors_awaygate", path)
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
@@ -1172,6 +1218,9 @@ def away_send_gate(**kwargs):
     Closed on every failure of its own, including the one that cannot happen
     by accident: `awaygate.py` missing beside this file.
     """
+    # Not a gate and never a verdict: before a browser call, the cloud browser is
+    # held to the person's list of sites (browsersites.py). One hook, one gate.
+    away_browser_sites(**kwargs)
     module = _awaygate()
     if module is None:
         return {"action": "block",
@@ -2905,8 +2954,11 @@ SIGN_IN_TOOL = "browser_sign_in_link"
 #: Filing a problem report with the Memoe team, on both runtimes. Its
 #: section is below, after the connections list.
 REPORT_TOOL = "report_problem"
+#: Connecting a service the person asked for, by a sign-in link (below,
+#: before `register`).
+CONNECT_TOOL = "connect_service"
 #: Tools this plugin registers that are not a connector's verb.
-NOT_CONNECTOR_TOOLS = frozenset({CONNECTIONS_TOOL, SIGN_IN_TOOL, REPORT_TOOL})
+NOT_CONNECTOR_TOOLS = frozenset({CONNECTIONS_TOOL, SIGN_IN_TOOL, REPORT_TOOL, CONNECT_TOOL})
 CONNECTIONS_MD = os.path.join("context", "_connections.md")
 CONNECTIONS_JSON = os.path.join("context", "_connections.json")
 CONNECTIONS_DESCRIPTION = (
@@ -2935,7 +2987,11 @@ def _mcp_servers_here():
     """The names under `mcp_servers` in this gateway's config.yaml — names
     only, never a value. Empty when there is no config or no PyYAML."""
     try:
-        import yaml
+        try:
+            import yaml
+        except ImportError:
+            # Hermes's own venv has no PyYAML; hermes_yaml is its (ruamel) reader.
+            import hermes_yaml as yaml
 
         with open(os.path.join(hermes_home(), "config.yaml"), encoding="utf-8") as handle:
             config = yaml.safe_load(handle) or {}
@@ -3282,6 +3338,107 @@ def register_code_sources():
     return True
 
 
+# --- connect_service: a sign-in link for a service the person asked to connect ---
+#
+# The owner, 2026-11-14: "If it needs a connection — 'I want to connect to
+# this' — he could say, 'Okay, sure. Here, let me…' He could even make a link,
+# a Composio linker." The router skill forbids minting a connection on Moe's
+# own initiative (COMPOSIO_MANAGE_CONNECTIONS creates what it was asked
+# about), and that stays: this is the route for when the person asked, in
+# their own turn, and it goes through composio.py's `connect`, which is what
+# the Connect button runs — so a second click does not mint a duplicate, and a
+# stale pending sign-in is freed first. docs/SETTINGS-ASSISTANT.md.
+
+CONNECT_DESCRIPTION = (
+    "Start connecting a service the person asked to connect (Gmail, Notion, Slack, GitHub, "
+    "Google Calendar… any of the ~500 Composio services), and get the sign-in link to give "
+    "them. Only when they asked for it or said yes to your offer in this conversation, never "
+    "on your own; the person also sees a confirmation before it starts. `service` is the "
+    "service's name. If it is already connected you are told "
+    "so. Give them the link as it is; it opens the service's own sign-in page.")
+CONNECT_SCHEMA = {
+    "name": CONNECT_TOOL,
+    "description": CONNECT_DESCRIPTION,
+    "parameters": {"type": "object", "properties": {
+        "service": {"type": "string", "description": "The service, e.g. \"notion\" or \"google calendar\"."},
+        "another_account": {"type": "boolean",
+                            "description": "True only when they want a second account of a service "
+                                           "that is already connected."},
+    }, "required": ["service"]},
+}
+CONNECT_TIMEOUT = 60
+#: What people call a service, against Composio's slug where they differ.
+CONNECT_ALIASES = {"gcal": "googlecalendar", "calendar": "googlecalendar", "google calendar": "googlecalendar",
+                   "gdrive": "googledrive", "drive": "googledrive", "google drive": "googledrive",
+                   "google docs": "googledocs", "docs": "googledocs", "google sheets": "googlesheets",
+                   "sheets": "googlesheets", "email": "gmail", "google mail": "gmail", "x": "twitter"}
+
+
+def connect_slug(service):
+    """The Composio slug for what the person called it, or "" when it is not one."""
+    words = re.sub(r"\s+", " ", str(service or "").strip().lower())
+    if words in CONNECT_ALIASES:
+        return CONNECT_ALIASES[words]
+    return re.sub(r"[^a-z0-9_]", "", words)
+
+
+def connect_presence():
+    """`{"live": bool, "why": str}` from the fork, failing closed."""
+    try:
+        from tools.browser_chrome_extension import turn_presence
+        verdict = turn_presence()
+        return verdict if isinstance(verdict, dict) else {"live": False, "why": "no answer"}
+    except Exception as e:
+        return {"live": False, "why": "presence could not be established (%s)" % type(e).__name__}
+
+
+def _connect(args):
+    slug = connect_slug(args.get("service"))
+    if not slug or len(slug) > 60:
+        return {"success": False, "error": "Say which service to connect."}
+    verdict = connect_presence()
+    if not verdict.get("live"):
+        return {"success": False, "status": "refused",
+                "error": "Not started: this is %s, and a connection is only started when the person "
+                         "asks for it in their own turn." % (verdict.get("why") or "not the person's turn")}
+    script = os.path.join(connectors_dir(), "composio.py")
+    if not os.path.isfile(script):
+        return {"success": False, "status": "unavailable",
+                "error": "Connecting services is not available on this Mac. Tell them they can connect "
+                         "it in Memoe's Connections."}
+    argv = [sys.executable, script, "connect", slug] + (["--another"] if args.get("another_account") is True else [])
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, input="", timeout=CONNECT_TIMEOUT,
+                              cwd=moe_home(), env=connector_env())
+    except subprocess.TimeoutExpired:
+        return {"success": False, "status": "timeout",
+                "error": "Composio did not answer in time. Offer to try again, or point them to Connections."}
+    out = (done.stdout or "").strip().splitlines()
+    first = out[-1].strip() if out else ""
+    if done.returncode == 0 and first == "already connected":
+        return {"success": True, "result": {"service": slug, "connected": True,
+                                            "say": "%s is already connected." % slug}}
+    if done.returncode == 0 and first.startswith("https://"):
+        return {"success": True, "result": {"service": slug, "link": first,
+                                            "say": "Give them this link to sign in to %s; it is "
+                                                   "connected as soon as they finish." % slug}}
+    why = (done.stderr or "").strip().splitlines()
+    return {"success": False, "status": "failed",
+            "error": (why[-1] if why else "No sign-in link came back for %r." % slug)
+                     + " If it is not a Composio service, it may be one Memoe connects itself: "
+                       "point them to Connections in Memoe."}
+
+
+def connect_handler(params=None, **kwargs):
+    """Start the connection. Never raises: every outcome is a sentence."""
+    del kwargs
+    try:
+        return json.dumps(_connect(params if isinstance(params, dict) else {}))
+    except Exception as e:
+        logger.warning("moe-connectors: %s raised", CONNECT_TOOL, exc_info=True)
+        return json.dumps({"success": False, "error": "Not started (%s: %s)." % (type(e).__name__, e)})
+
+
 def register(ctx):
     register_code_sources()
     if away():
@@ -3313,6 +3470,19 @@ def register(ctx):
         description=REPORT_DESCRIPTION,
         emoji="🎫",
     )
+    if not away():
+        # A Mac only: the machine's Composio is the person's through their
+        # Mac's sign-in, and connecting is asked for at the Mac or from a
+        # chat that reaches it.
+        ctx.register_tool(
+            name=CONNECT_TOOL,
+            toolset=TOOLSET,
+            schema=CONNECT_SCHEMA,
+            handler=connect_handler,
+            check_fn=lambda: True,
+            description=CONNECT_DESCRIPTION,
+            emoji="🔗",
+        )
     if away() and _signin() is not None and _signin().TOOL == SIGN_IN_TOOL:
         # The person signs in themselves, on their phone, in this machine's
         # browser (signin.py). Only here: at a Mac the hand-over shows the

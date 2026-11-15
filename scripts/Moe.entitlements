@@ -23,5 +23,12 @@
        NSAppleEventsUsageDescription in Info.plist supplies the prompt text. -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
+
+  <!-- Location Services, for moe_location (weather, "near me"). Under
+       Hardened Runtime CoreLocation refuses without it and no prompt is ever
+       shown; NSLocationWhenInUseUsageDescription in Info.plist supplies the
+       prompt text. Asked on first need, never at launch. -->
+  <key>com.apple.security.personal-information.location</key>
+  <true/>
 </dict>
 </plist>

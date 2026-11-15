@@ -88,6 +88,7 @@ let package = Package(
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
+                "MoeComponents",
                 "MoeDictation",
                 "MoeScreen",
                 "MoeBrain",
@@ -257,9 +258,25 @@ let package = Package(
             name: "MoeObjC",
             path: "Sources/MoeObjC"
         ),
+        // The parts of Memoe a slim build fetches on demand: the pinned
+        // manifest, the one fetcher, its HTTP transport. Pure Foundation and
+        // CryptoKit, and its own target so the rules — a wrong hash is
+        // refused, a cut download resumes — are testable without the app.
+        // docs/SLIM-DOWNLOAD.md.
+        .target(
+            name: "MoeComponents",
+            path: "Sources/MoeComponents",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "MoeComponentsTests",
+            dependencies: ["MoeComponents"],
+            path: "Tests/MoeComponentsTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .target(
             name: "MoeMeeting",
-            dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "MoeObjC"],
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "MoeObjC", "MoeComponents"],
             path: "Sources/MoeMeeting",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

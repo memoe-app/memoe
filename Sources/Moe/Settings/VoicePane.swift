@@ -87,6 +87,7 @@ struct VoicePane: View {
 
     private var config: Config { conductor.config }
     private var model: VoiceSettingsModel { VoiceSettingsModel(conductor: conductor) }
+    @Environment(\.settingSpotlight) private var spotlight
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,6 +114,10 @@ struct VoicePane: View {
             }
         }
         .background(Theme.raised)
+        // Moe opened Settings on a row behind "More": open it.
+        .onChange(of: spotlight, initial: true) { _, title in
+            if SettingSpotlight.under(title) == "More" { tab = .talking; moreOpen = true }
+        }
         .sheet(isPresented: $showDictationHistory) {
             DictationHistoryView(conductor: conductor)
         }
@@ -449,6 +454,7 @@ struct VoicePane: View {
                             .foregroundStyle(Theme.accentDeep)
                             .frame(width: 24, height: 24)
                             .background(Circle().fill(Theme.accentTint))
+                            .accessibilityLabel("Hear this voice")
                     }
                     .buttonStyle(.plain)
                     .help("Hear this voice")
@@ -471,6 +477,7 @@ struct VoicePane: View {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.Space.small) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(Theme.Typo.ui(11)).foregroundStyle(Theme.warn)
+                        .accessibilityLabel("Warning")
                     Text(fellBack.sentence)
                         .font(Theme.Typo.ui(11)).foregroundStyle(Theme.warn)
                         .fixedSize(horizontal: false, vertical: true)
@@ -647,6 +654,10 @@ struct VoicePane: View {
             Calm.Row(title: "Typed questions open the Chat window",
                      detail: "Off, the answer stays in the panel under the notch.") {
                 Self.lever(model.typedOpensChat)
+            }
+            Calm.Row(title: "Hovering the notch opens it",
+                     detail: "Off, only a click does.") {
+                Self.lever(model.hoverOpens)
             }
         }
     }

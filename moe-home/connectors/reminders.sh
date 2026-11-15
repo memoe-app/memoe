@@ -42,7 +42,7 @@ status)
        osascript -e 'tell application "Reminders" to return name of first list' >/dev/null 2>&1; then
     echo "ok: reading Reminders"
   else
-    echo "needs-setup: allow Moe to control Reminders (System Settings › Privacy & Security › Reminders)"
+    echo "needs-setup: allow Memoe to control Reminders (System Settings › Privacy & Security › Reminders)"
     exit 1
   fi
   ;;
@@ -170,7 +170,7 @@ except subprocess.TimeoutExpired:
 if done.returncode != 0:
     err = (done.stderr or "").strip()
     if "-1743" in err or "not allowed" in err.lower() or "not authorized" in err.lower():
-        print("needs-setup: allow Moe to control Reminders (System Settings > Privacy & Security > Reminders)")
+        print("needs-setup: allow Memoe to control Reminders (System Settings > Privacy & Security > Reminders)")
         sys.exit(1)
     if list_name and ("-1728" in err or "get list" in err.lower()):
         sys.stderr.write("create: there is no Reminders list called " + repr(list_name) + "\n"); sys.exit(1)

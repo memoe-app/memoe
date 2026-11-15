@@ -4,6 +4,7 @@ import FluidAudio
 import Foundation
 import MoeBrain
 import MoeChat
+import MoeComponents
 import MoeDesign
 import MoeLedger
 import MoeVoice
@@ -104,6 +105,82 @@ if args.count > 1, args[1] == "--verify-models" {
         let failures = await Models.verifyOffline()
         print(failures == 0 ? "every bundled model loaded offline"
                             : "\(failures) model(s) could not load offline")
+        exit(failures == 0 ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+// `Moe --fetch-component <id> <root>`: fetch one on-demand component into a
+// directory of your choosing, through the same fetcher the app uses, and say
+// what happened. For proving the pinned download against the real host
+// without touching this Mac's model caches. docs/SLIM-DOWNLOAD.md §7.
+if args.count > 1, args[1] == "--fetch-component" {
+    guard args.count > 3, let component = ComponentCatalog.named(args[2]) else {
+        print("usage: Moe --fetch-component <\(ComponentCatalog.all.map(\.id).joined(separator: "|"))> <root>")
+        exit(2)
+    }
+    let root = URL(fileURLWithPath: (args[3] as NSString).expandingTildeInPath, isDirectory: true)
+    Task {
+        do {
+            let outcome = try await ComponentFetcher.shared.ensure(component, in: root)
+            print(outcome == .fetched
+                  ? "fetched \(component.id): \(component.files.count) files, \(component.size), every sha256 verified"
+                  : "\(component.id) was already there; nothing fetched")
+            exit(0)
+        } catch {
+            print(error.localizedDescription)
+            exit(1)
+        }
+    }
+    RunLoop.main.run()
+}
+
+// `Moe --launch-models <dir>`: what a launch of this build does to the model
+// caches, done to `<dir>/appsupport` and `<dir>/cache` instead. A directory is
+// required — with none this would be the real caches, which is `--link-models`.
+// Exit 0 when both on-demand models are present afterwards, 1 when not.
+if args.count > 1, args[1] == "--launch-models" {
+    guard args.count > 2 else {
+        print("usage: Moe --launch-models <dir>")
+        exit(2)
+    }
+    setvbuf(stdout, nil, _IONBF, 0)
+    exit(OnDemandModels.rehearseLaunch(under: URL(
+        fileURLWithPath: (args[2] as NSString).expandingTildeInPath, isDirectory: true)))
+}
+
+// `Moe --load-components <dir>`: load both on-demand models out of
+// `<dir>/appsupport` through FluidAudio — Core ML actually opening them —
+// with every download refused. The question the slim update turns on: are
+// the models a `prepare` build left behind ones the next build can use?
+if args.count > 1, args[1] == "--load-components" {
+    guard args.count > 2 else {
+        print("usage: Moe --load-components <dir>")
+        exit(2)
+    }
+    setvbuf(stdout, nil, _IONBF, 0)
+    let root = Models.Root.appSupport.url(under: URL(
+        fileURLWithPath: (args[2] as NSString).expandingTildeInPath, isDirectory: true))
+    Task {
+        ModelHub.offlineMode = true
+        var failures = 0
+        do {
+            let dir = root.appendingPathComponent(ComponentCatalog.vocabularyBoost.folder, isDirectory: true)
+            _ = try await CtcModels.downloadAndLoad(to: dir)
+            _ = try await CtcTokenizer.load(from: dir)
+            print("✓ vocabulary-boost loaded from \(dir.path), network off")
+        } catch {
+            failures += 1
+            print("✗ vocabulary-boost: \(error)")
+        }
+        do {
+            let dir = root.appendingPathComponent(ComponentCatalog.speakerDiarization.folder, isDirectory: true)
+            _ = try await DiarizerModels.downloadIfNeeded(to: dir)
+            print("✓ speaker-diarization loaded from \(dir.path), network off")
+        } catch {
+            failures += 1
+            print("✗ speaker-diarization: \(error)")
+        }
         exit(failures == 0 ? 0 : 1)
     }
     RunLoop.main.run()
@@ -310,8 +387,9 @@ if args.count > 1, args[1] == "--sync" {
     var env = ProcessInfo.processInfo.environment
     env["USER"] = NSUserName()
     env["HOME"] = NSHomeDirectory()
-    env["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:"
-                + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+    env["PATH"] = BrainSetup.pathWithMoePython(
+        "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:"
+        + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"))
     p.environment = env
     do { try p.run() } catch {
         FileHandle.standardError.write(Data("could not run sync: \(error)\n".utf8))
@@ -1053,6 +1131,8 @@ if args.count > 1, args[1] == "--ask" {
             FileHandle.standardError.write(Data(line.utf8))
         case .textDelta(let t):
             FileHandle.standardOutput.write(Data(t.utf8))
+        case .reasoningDelta:
+            break
         case .toolStarted(_, _, let emoji, let d, _):
             FileHandle.standardError.write(Data("  \(emoji ?? "·") \(d)\n".utf8))
         case .toolFinished:
@@ -1093,10 +1173,11 @@ if args.count > 1, args[1] == "--ask" {
                 retried = true
                 FileHandle.standardError.write(Data("asking again in \(Int(secs))s (no reset)\n".utf8))
                 DispatchQueue.main.asyncAfter(deadline: .now() + secs) {
-                    // start() is what a next turn does after a failure; on
-                    // the supervisor it is idempotent, so a gateway that
-                    // came back on its own is used as it stands.
-                    bridge.start()
+                    // Only the send, as the Conductor does it. This used
+                    // to call `bridge.start()` first "because that is what a
+                    // next turn does after a failure" — nothing in the app
+                    // did, so the check passed on a path no person takes
+                    // while every real question got "Moe isn't connected".
                     bridge.send(question, starter: .person)
                 }
                 return
@@ -1251,7 +1332,7 @@ if args.count > 1, args[1] == "--screen-test" {
                 FileHandle.standardError.write(Data("error: \(m)\n".utf8)); failed = true
                 if case .failedToLaunch = event { finish(1) }
             case .exited(let c): finish(c == 0 ? (failed ? 1 : 0) : c)
-            case .ready, .toolStarted, .toolFinished, .status, .notice: break
+            case .ready, .toolStarted, .toolFinished, .status, .notice, .reasoningDelta: break
             }
         }
         bridge.start()

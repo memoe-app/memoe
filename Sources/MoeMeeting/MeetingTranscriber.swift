@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MoeComponents
 
 /// The speech recogniser a meeting borrows from the app. `Moe` conforms
 /// its already-loaded Parakeet backend, so the model is loaded once; the
@@ -32,6 +33,13 @@ public final class FluidDiarizer: MeetingDiarizer, @unchecked Sendable {
 
     private func load() async throws -> DiarizerManager {
         if let existing = lock.withLock({ manager }) { return existing }
+        // On disk first, by Memoe's own fetcher — pinned and hash-checked —
+        // so FluidAudio below finds it and downloads nothing itself. A build
+        // that carries the model returns at once. Offline in a slim build
+        // this throws a sentence a person can read, and the caller records
+        // it and keeps the notes without speaker names.
+        try await ComponentFetcher.shared.ensure(ComponentCatalog.speakerDiarization,
+                                                 in: ComponentCatalog.modelsRoot)
         let models = try await DiarizerModels.downloadIfNeeded()
         let m = DiarizerManager(config: DiarizerConfig(minSpeechDuration: 0.5))
         m.initialize(models: models)
@@ -240,7 +248,10 @@ public final class MeetingTranscriber: @unchecked Sendable {
                     }
                 }
             } catch {
-                lock.withLock { warnings.append("diarization failed: \(error)") }
+                // A component that could not be fetched explains itself in
+                // a whole sentence; anything else keeps its raw description.
+                let said = (error as? ComponentError)?.localizedDescription ?? "diarization failed: \(error)"
+                lock.withLock { warnings.append(said) }
             }
         }
         // Off the record: the audio was already silence, but a window that

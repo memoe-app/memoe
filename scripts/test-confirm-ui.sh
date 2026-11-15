@@ -12,6 +12,7 @@
 # is a send. "I could not ask" must never become "yes".
 set -u
 
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$HERE/.."
 S="$(mktemp -d "${TMPDIR:-/tmp}/moe-confirm-test.XXXXXX")"

@@ -32,7 +32,8 @@
 #   telegram-bot the one-click managed bot (connect-telegram-bot.sh: a
 #                t.me link, tap "Create Bot", done); `--token` instead pastes
 #                a BotFather token
-#   auth         spotify → hermes auth spotify
+#   auth         spotify → the spotify catalog plugin (installed on first
+#                use), then its own `hermes spotify login`
 #
 # Browsers. Nothing here opens one: every URL is printed for you to open.
 # Hermes's OAuth code opens the browser itself on a Mac and has no flag to
@@ -283,7 +284,7 @@ print("Chat platforms — talk to Moe from your phone (%d)" % len(cat["platforms
 for e in cat["platforms"]:
     row("platform", e, "%-28s %s" % (e["label"], ", ".join(e["credentials"])))
 print()
-print("  %s %-20s Spotify (hermes auth spotify)" % ("✓" if "auth/spotify" in connected else " ", "spotify"))
+print("  %s %-20s Spotify (hermes spotify login)" % ("✓" if "auth/spotify" in connected else " ", "spotify"))
 PY
   echo
   echo "Any other MCP server:  connect.sh --url <name> <https://…>   (advanced — read the warning it prints)"
@@ -557,8 +558,40 @@ connect_spotify() {
     echo "✗ Spotify can't be connected yet: Memoe has no Spotify app of its own to sign you in with."
     exit 1
   fi
+  # Since Hermes 0.21.7 Spotify is a catalog plugin, not core: the sign-in is
+  # the plugin's own `hermes spotify login`, and `hermes auth spotify` only
+  # prints where it went. The plugin is fetched from the catalog's pinned
+  # commit the first time someone connects Spotify, and never before — lazy
+  # installs are off for Moe, so nothing else will fetch it.
+  #
+  # --enable --yes-deps, both: with no terminal `plugins install` asks neither
+  # question and answers both no — the plugin lands on disk DISABLED, and any
+  # Python dependency it declares is refused (hermes_cli/plugins_cmd_install.py,
+  # cmd_install: `should_enable = _is_tty() and …`, and _consent_python_deps'
+  # "Non-interactive install — skipping"). A disabled plugin registers no
+  # `hermes spotify` command, so the sign-in below would be "unknown command".
+  local fresh=""
+  if [ ! -d "$HERMES_HOME/plugins/spotify" ]; then
+    echo "Adding Spotify to Moe (one time)…"
+    if ! hermes plugins install spotify --enable --yes-deps </dev/null 2>&1; then
+      echo "✗ Spotify couldn't be added: Moe could not fetch the Spotify plugin. Check the connection and try again."
+      exit 1
+    fi
+    # Hermes can exit 0 having installed nothing it will load; the directory
+    # is what `hermes spotify` and configure-hermes.py both look for.
+    if [ ! -d "$HERMES_HOME/plugins/spotify" ]; then
+      echo "✗ Spotify couldn't be added: the Spotify plugin did not install."
+      exit 1
+    fi
+    fresh=1
+  fi
   echo "Moe signs in to Spotify with PKCE. The URL is printed; open it yourself."
-  HERMES_SPOTIFY_CLIENT_ID="$cid" hermes auth spotify </dev/null 2>&1 | mark_sign_in_url
+  HERMES_SPOTIFY_CLIENT_ID="$cid" hermes spotify login </dev/null 2>&1 | mark_sign_in_url
+  # The gateway loads plugins at start, and `spotify` is a default-off toolset:
+  # it is on only once configure-hermes.py lists it, which it does when the
+  # plugin directory exists. The restart is the app's job; a fresh supervisor
+  # runs configure-hermes.py before it starts the gateway.
+  [ -z "$fresh" ] || echo "NEEDS_RESTART=gateway"
 }
 
 # ── Remove ────────────────────────────────────────────────────────────────
@@ -713,7 +746,7 @@ cmd_remove() { # name [account]
       echo "✓ $name token removed from .env."
       echo "NEEDS_RESTART=gateway" ;;
     *)
-      if [ "$name" = spotify ]; then hermes auth logout spotify; return 0; fi
+      if [ "$name" = spotify ]; then hermes spotify logout; return 0; fi
       echo "✗ nothing called '$name' is connected."; return 1 ;;
   esac
 }

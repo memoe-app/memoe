@@ -400,14 +400,12 @@ def waiting_sentence(rows, channel=None):
         who = rows[0]["sender"] or rows[0]["chat_id"]
         return ("%s messaged Moe on %s and is waiting to be let in. Moe does "
                 "not answer anybody who has not been let in, so nothing has "
-                "been sent to them. Let them in in Connections, or run: "
-                "channels.py approve %s %s"
-                % (who, rows[0]["channel"].capitalize(),
-                   rows[0]["channel"], rows[0]["chat_id"]))
+                "been sent to them. Approve them in Ways to reach Moe."
+                % (who, rows[0]["channel"].capitalize()))
     names = ", ".join(sorted({r["channel"].capitalize() for r in rows}))
     return ("%d chats are waiting to be let in (%s). Moe does not answer "
             "anybody who has not been let in, so nothing has been sent to "
-            "them. Let them in in Connections, or run: channels.py knocks"
+            "them. Approve them in Ways to reach Moe."
             % (len(rows), names))
 
 

@@ -35,6 +35,9 @@ SIT = {"id": "sit_1", "title": "Acme short delivery", "kind": "payment dispute",
        "thread_name": "Acme Foods", "source": "native/whatsapp",
        "evidence": [{"id": "x", "quote": "Full payment of $4,200 by Friday"}]}
 
+#: 2026-09-24T20:00:00Z — an hour after SIT's `updated_at`.
+TICK_AT = 1790280000.0
+
 FOUND = [{"title": "Rights when a supplier short-ships", "url": "https://law.example/short-ship",
           "snippet": "Pay for what was delivered, or accept with a credit note."}]
 
@@ -179,8 +182,13 @@ class TickPrepareTest(unittest.TestCase):
             calls.append(sit["id"])
             return ({"offer": "ready", "research": [], "options": ["a"], "draft": "", "for": sit["updated_at"]},
                     "prepared")
-        self.s.tick(call=lambda m: "{}", sources=[], preparer=preparer)
-        self.s.tick(call=lambda m: "{}", sources=[], preparer=preparer)
+        # A pinned clock, an hour after SIT was last touched. With none, the
+        # tick ran on the wall clock and SIT — dated 2026-09-24 — aged out of
+        # the 45-day keep on 2026-11-08, so `prune` dropped the record this
+        # is about and the test failed on a KeyError rather than on anything
+        # it checks.
+        self.s.tick(call=lambda m: "{}", sources=[], preparer=preparer, now=TICK_AT)
+        self.s.tick(call=lambda m: "{}", sources=[], preparer=preparer, now=TICK_AT + 300)
         self.assertEqual(calls, ["sit_1"])
         rec = self.s.load_situations()["sit_1"]
         self.assertEqual(rec["status"], "prepared")

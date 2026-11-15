@@ -1,4 +1,6 @@
 #!/bin/bash
+# NEEDS: debug-moe
+#
 # Integration test for DictationPolisher, driven through
 # `.build/debug/Moe --polish-test` against scripts/fake-hermes. Nothing real
 # is started and nothing of the user's is touched: MOE_HOME (debug-only)
@@ -17,6 +19,7 @@
 #   6. quotes/fence → wrapping the model adds is stripped
 #   7. no gateway   → connection refused: input returned, fast
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 MOE="$ROOT/.build/debug/Moe"
@@ -91,7 +94,19 @@ grep -q 'Vocabulary (spell exactly like this): Kubernetes' "$REQLOG" && ok "voca
 grep -q 'terminal or code editor: return the text UNCHANGED' "$REQLOG" && ok "terminal register hint" || bad "no app hint"
 grep -q '"stream": *true' "$REQLOG" && ok "streaming request" || bad "not streaming"
 # Brain settings: the default provider/model ride along on every request.
-grep -q '"model": *"opus"' "$REQLOG" && ok "default model named" || bad "no model in body"
+# The default is read out of Config.swift, not written here a second time:
+# this said "opus" until docs/DEFAULTS.md row 2 changed a new person's model
+# to sonnet (`var brainModel: String = "sonnet"`, Config.swift), and then it
+# reported "no model in body" about a body that named one. What this check is
+# for is that the DEFAULT rides along, whichever model that is.
+DEFAULT_MODEL="$(sed -n 's/^    var brainModel: String = "\([^"]*\)"$/\1/p' "$ROOT/Sources/Moe/Config.swift" | head -1)"
+if [ -z "$DEFAULT_MODEL" ]; then
+  bad "cannot read the default model out of Sources/Moe/Config.swift (var brainModel: String = \"…\")"
+elif grep -q "\"model\": *\"$DEFAULT_MODEL\"" "$REQLOG"; then
+  ok "default model named ($DEFAULT_MODEL, Config.swift's brainModel)"
+else
+  bad "the body does not name the default model ($DEFAULT_MODEL): $(grep -o '"model": *"[^"]*"' "$REQLOG" | head -1)"
+fi
 grep -q '"provider": *"claude-code-cli"' "$REQLOG" && ok "default provider named" || bad "no provider in body"
 # Dictation tells the model not to think, on every provider including the
 # Claude Code child — measured at a third of the wait, with identical output

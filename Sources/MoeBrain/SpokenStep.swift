@@ -55,11 +55,13 @@ public enum SpokenStep {
             guard let what = speakable(detail) else { return "Searching the web" }
             return "Searching the web for \(what)"
 
-        case "web_extract", "browser_navigate":
+        case "web_extract":
             guard let site = host(in: detail) else { return "Reading a page" }
             return "Reading something on \(site)"
 
-        case "browser_click", "browser_type", "browser_exec":
+        // Hermes's one browser tool since its browser rewire: navigation,
+        // clicks and typing are all code inside a browser_exec call.
+        case "browser_exec":
             return "Working through the page"
 
         // Never the name. A guard used to sit here keeping machine-made

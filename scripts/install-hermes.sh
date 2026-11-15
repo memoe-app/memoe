@@ -72,7 +72,66 @@ HERMES_BRANCH="${HERMES_BRANCH:-claude-code-runtime}"
 #
 # Anything printed means existing Macs need a re-seed and a release, not just a
 # pin bump. Nothing printed means the bump reaches everyone.
-HERMES_COMMIT="${HERMES_COMMIT-eb8e427cd1263026b5a5d2b50cfa45147a4f1445}"
+# 2026-11-12, for 0.3.25: the pin is the fork's merge of upstream up to
+# 1b0f071dbbf (staged catch-up steps 1-3) and it is published on the fork as
+# the branch `memoe/0.3.25`, NOT yet on `claude-code-runtime`. The old pin is
+# an ancestor of it, so moving `claude-code-runtime` there is a plain
+# fast-forward — and until someone does, the one path below that insists the
+# pin is in $remote/$HERMES_BRANCH (an existing .git checkout, which no Mac
+# running a shipped Memoe has had since 0.3.13) refuses. Seeds, fresh clones,
+# deploy.sh and refresh-hermes-seed.sh fetch the sha itself and do not care.
+# This range moves uv.lock, pyproject.toml and pm/lock.json: it reaches
+# existing Macs only through the re-seed a release carries.
+# fa8a2f898d (on top of 4b10e410aa): an api_server turn run by the session
+# authority keeps X-Hermes-Turn-Origin, -Person-Words and -Voice-Turn. Without
+# it every Memoe turn on the merged gateway was nobody's: no spoken quick open,
+# no claimstore learning, no person words for recipient grounding.
+# b62f5983d6 (on top of fa8a2f898d): the Chrome Web Store build of the
+# extension (nmdhnfjfpipnjbfbiligpbdnpfdkojjn) is trusted beside the unpacked
+# dev id, by the host manifest and the relay; lane_status says why the lane is
+# unusable; extension 0.2.2 shows a red "!" when it cannot reach the host.
+# 782ecedbc8 (on top of b62f5983d6): the cloud computer's kept browser
+# (docs/AWAY-BROWSER.md) is the OOM killer's first choice, launches small, caps
+# its tabs and holds a memory floor, and never clicks, holds or solves a
+# CAPTCHA (browser.captcha.hands_off). On every lane, a Mac's too: the attach
+# no longer asks agent-browser for its cdp-url, which launched a second,
+# throwaway Chrome beside the driven one for the life of the daemon.
+# ee552f2952 (merge on top of 782ecedbc8): a `pre_cron_run` plugin hook, asked
+# first in every cron fire, so moe-screen can claim each run on the edge before
+# the Mac fires it (owner decision D4, 2026-11-13). Code only: no lock moves.
+# 1d8ecafda5 (on top of ee552f2952): X-Hermes-No-Memory, bound like the turn
+# origin, for Memoe's "Don't remember this chat": the built-in memory tool refuses
+# every write in that turn and no background memory review is spawned; plugins
+# read gateway.session_context.get_turn_no_memory(). Code only: no lock moves.
+# 117f524bdd (on top of 1d8ecafda5): the engine's own notices in plain words
+# (no "Hermes", no commands), the startup "I'm back" ping behind the same
+# diagnostics gate as the shutdown notice, and "low disk" relative to the
+# volume — a 2 GB Away disk with 1.7 GB free was "low". Code only: no lock moves.
+# c03680cd35 (on top of 117f524bdd): a relayed channel with no adapter here
+# (Memoe's `moemail`) keeps its own name instead of becoming "relay", so its
+# turns are the person talking. Code only: no lock moves.
+# 2026-11-13, for 0.3.26: Hermes v0.23.1. The pin is the fork's merge of the
+# 0.3.25 line (up to c03680cd35) with upstream's browser rewire (#143146,
+# staged catch-up step 4) and the stable tag v0.23.1 (3b42157858, step 5),
+# published as the branch `memoe/0.3.26`, NOT yet on `claude-code-runtime`
+# (that branch's tip is an ancestor, so moving it there is a fast-forward;
+# the .git-checkout path below fetches a pin from any fork branch).
+# Upstream retired agent-browser: browser_exec drives pm's Chromium over CDP,
+# so SEED_TOOLS / PM_TOOLS carry `chromium` (and `pnpm`, now required).
+# This range moves uv.lock, pyproject.toml and pm/lock.json: it reaches
+# existing Macs only through the re-seed a release carries.
+# 8b18fb186a (on top of 5ee5f7634b): the 16 translations of the cron-interrupted
+# notice follow the plain English one, which dropped {action} in 117f524bdd.
+# Locales only: no lock moves.
+# 169f94d2d2 (on top of 8b18fb186a): the engine image's runtime stage stages
+# pnpm too, which pm.activate() calls required — the Away image answered every
+# launch and `hermes doctor` with "install out of sync (pnpm: …)" without it.
+# Dockerfile only: no lock moves, and nothing a Mac's seed carries changes.
+# eaba0dfe9c (on top of 169f94d2d2): a relayed message from Memoe's catch-all
+# connector (one generic `relay` hello, raw secret, no GATEWAY_RELAY_ID) is
+# admitted again. v0.23.1 refused every one permission_denied, so the Mac
+# dropped Telegram DMs with no reply. Code only: no lock moves.
+HERMES_COMMIT="${HERMES_COMMIT-eaba0dfe9c72c57d3dcaba5c371445cf269d11d8}"
 # The same set the seed is built with (stage-hermes-seed.sh SEED_EXTRAS). Since
 # the 3.14 line Hermes no longer installs an extra on first use here — lazy
 # installs are off — so what is not synced now is a feature that is refused.
@@ -171,6 +230,12 @@ export UV_NO_CONFIG=1                # a stray ~/.config/uv/uv.toml can't redire
 # default dir re-pointed the venv at ~/.local/share/uv/python and the next
 # stage-hermes-seed.sh refused. Tests pass their own directory through.
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HERMES_HOME/python}"
+# And keep uv's `python3.x` link out of the person's ~/.local/bin, where
+# `uv python install` puts one by default: that is a directory on their own
+# PATH, and Hermes's interpreter has no business answering `python3.14` in
+# their terminal. Found 2026-11-13 through this script's test, which leaked
+# the same link into the developer's ~/.local/bin.
+export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$UV_PYTHON_INSTALL_DIR/bin}"
 unset UV_PYTHON 2>/dev/null || true  # an inherited pin must not override PYTHON_VERSION
 
 mkdir -p "$MOE_HOME/logs" "$MOE_BIN_DIR" "$HERMES_HOME"
@@ -355,6 +420,16 @@ if [ -d "$AGENT_DIR/.git" ]; then
     if ! net_run git -C "$AGENT_DIR" fetch --quiet "$remote" "$HERMES_BRANCH"; then
       fail "hermes-agent: git fetch $remote $HERMES_BRANCH failed$NET_NOTE"
     fi
+    # The pin need not be on $HERMES_BRANCH: since 0.3.25 a release's pin is
+    # published on the fork as `memoe/<version>` first, and the default branch
+    # catches up later. So when the fetch above did not bring the pinned
+    # commit, ask the fork for the commit itself, and refresh the other
+    # branches so "already on the remote" below can see where it lives.
+    if [ -n "$HERMES_COMMIT" ] && ! git_q cat-file -e "$HERMES_COMMIT^{commit}" 2>/dev/null; then
+      net_run git -C "$AGENT_DIR" fetch --quiet "$remote" 2>>"$LOG" || true
+      git_q cat-file -e "$HERMES_COMMIT^{commit}" 2>/dev/null \
+        || net_run git -C "$AGENT_DIR" fetch --quiet "$remote" "$HERMES_COMMIT" 2>>"$LOG" || true
+    fi
     # Where the checkout should end up, decided explicitly rather than by
     # asking merge to work it out.
     #
@@ -371,7 +446,7 @@ if [ -d "$AGENT_DIR/.git" ]; then
     #   diverged        stop, and reset nothing
     target="${HERMES_COMMIT:-$remote/$HERMES_BRANCH}"
     if ! git_q cat-file -e "$target^{commit}" 2>>"$LOG"; then
-      fail "hermes-agent: $target is not in $remote/$HERMES_BRANCH — is the pin pushed? (HERMES_COMMIT in $(basename "$0"))"
+      fail "hermes-agent: $target is not on $remote — is the pin pushed? (HERMES_COMMIT in $(basename "$0"))"
     fi
     target_sha="$(git_q rev-parse "$target^{commit}")"
     if [ "$before" = "$target_sha" ]; then
@@ -390,7 +465,12 @@ if [ -d "$AGENT_DIR/.git" ]; then
       # pushed**: an unconditional move back would have orphaned somebody's
       # unpushed work to the reflog, silently, during what looks like an
       # install. A clean tree is not the same as a saved one.
-      if git_q merge-base --is-ancestor HEAD "$remote/$HERMES_BRANCH" 2>/dev/null; then
+      #
+      # "On the remote" means on ANY of its branches, not only $HERMES_BRANCH:
+      # a pin published as `memoe/<version>` is as safe to leave as one on the
+      # default branch, and asking only the default branch refused every
+      # downgrade from such a pin with "N commits ahead … not on the remote".
+      if [ -n "$(git_q branch -r --contains HEAD --list "$remote/*" 2>/dev/null)" ]; then
         if run git_q checkout -B "$HERMES_BRANCH" "$target_sha" --; then
           MOVED_BACK=1
           ok "hermes-agent moved back to the pinned ${target_sha:0:7} (it was ahead)"
@@ -398,7 +478,7 @@ if [ -d "$AGENT_DIR/.git" ]; then
           fail "hermes-agent: could not move back to the pinned ${target_sha:0:7}"
         fi
       else
-        unpushed="$(git_q rev-list --count "$remote/$HERMES_BRANCH..HEAD" 2>/dev/null || echo '?')"
+        unpushed="$(git_q rev-list --count HEAD --not --remotes="$remote" 2>/dev/null || echo '?')"
         fail "hermes-agent: $AGENT_DIR is $unpushed commit(s) ahead of the pin and they are not on $remote.
   Nothing was moved — push them, or point HERMES_COMMIT at what you actually want installed."
       fi
@@ -744,7 +824,12 @@ fi
 #
 # Not fatal: Hermes runs without any of these, and says which tool is missing.
 echo
-PM_TOOLS="${MOE_PM_TOOLS:-node npm uv ffmpeg ripgrep agent-browser}"
+# `chromium`, not `agent-browser`, since the 0.3.26 pin: upstream's browser
+# rewire (#143146) removed agent-browser from pm/lock.json (pm/defaults.py
+# RETIRED_DEFAULTS maps the old name to chromium), and prepare_tools refuses a
+# name the lock does not carry. `pnpm` joined pm's required set at the same
+# pin; without it every launch warns "install out of sync (pnpm: ...)".
+PM_TOOLS="${MOE_PM_TOOLS:-node npm pnpm uv ffmpeg ripgrep chromium}"
 pm_missing="$(cd / && env HERMES_HOME="$HERMES_HOME" PYTHONPATH="$AGENT_DIR" \
   "$AGENT_DIR/.venv/bin/python" -c '
 import sys

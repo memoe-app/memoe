@@ -32,7 +32,7 @@ struct VoiceSettingsModel {
         // More
         case shortcut, language, alsoAfterHold, sayOnIt, tellProgress, ding,
              speakSpoken, speakTyped, typedReadAsText, panelOpens, panelStays,
-             typedOpensChat, premium
+             typedOpensChat, hoverOpens, premium
 
         /// The key in config.json this control writes.
         var configKey: String {
@@ -58,6 +58,7 @@ struct VoiceSettingsModel {
             case .panelOpens: return "panelOnReply"
             case .panelStays: return "replyReadingSeconds"
             case .typedOpensChat: return "typedAnswersOpenChat"
+            case .hoverOpens: return "notchHoverOpens"
             case .premium: return "cloudVoice"
             }
         }
@@ -188,6 +189,10 @@ struct VoiceSettingsModel {
         let c = conductor
         return Binding(get: { c.config.typedAnswersOpenChat }, set: { c.setTypedAnswersOpenChat($0) })
     }
+    var hoverOpens: Binding<Bool> {
+        let c = conductor
+        return Binding(get: { c.config.notchHoverOpens }, set: { c.setNotchHoverOpens($0) })
+    }
     var premium: Binding<Bool> {
         let c = conductor
         return Binding(get: { c.config.cloudVoice }, set: { c.setCloudVoice($0) })
@@ -198,7 +203,7 @@ struct VoiceSettingsModel {
     /// The listening window's lengths. A saved value outside the list (the
     /// file allows 2–120) is offered too, so opening the page never
     /// silently changes it.
-    static func waitChoices(current: Double) -> [Int] {
+    nonisolated static func waitChoices(current: Double) -> [Int] {
         var all = [8, 12, 16, 20, 30]
         let now = Int(current)
         if !all.contains(now) { all.append(now); all.sort() }
@@ -208,9 +213,9 @@ struct VoiceSettingsModel {
     /// Zero is the one that is not a duration: the panel waits to be
     /// dismissed (`ReplyReveal.readingTime(seconds:)` reads below one
     /// second that way).
-    static let readingChoices: [Double] = [6, 12, 30, 0]
+    nonisolated static let readingChoices: [Double] = [6, 12, 30, 0]
 
-    static func readingLabel(_ seconds: Double) -> String {
+    nonisolated static func readingLabel(_ seconds: Double) -> String {
         seconds == 0 ? "Until I dismiss it" : "\(Int(seconds)) seconds"
     }
 }
@@ -225,6 +230,7 @@ enum Calm {
         let title: String
         var detail = ""
         @ViewBuilder var control: Control
+        @Environment(\.settingSpotlight) var spotlight
 
         var body: some View {
             HStack(alignment: .top, spacing: Theme.Space.base) {
@@ -240,6 +246,7 @@ enum Calm {
                 control.padding(.top, 1)
             }
             .padding(.vertical, 9)
+            .settingSpotlight(title, lit: spotlight == title)
         }
     }
 
@@ -303,6 +310,7 @@ enum Calm {
                 HStack(spacing: Theme.Space.small) {
                     Image(systemName: open ? "chevron.down" : "chevron.right")
                         .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.ink3).frame(width: 12)
+                        .accessibilityLabel(open ? "Expanded" : "Collapsed")
                     Text("More").font(Theme.Typo.ui(13, weight: .semibold)).foregroundStyle(Theme.ink)
                     Text(hint).font(Theme.Typo.ui(12)).foregroundStyle(Theme.ink3).lineLimit(1)
                     Spacer(minLength: 0)

@@ -208,7 +208,7 @@ struct BrainPath: Sendable, Identifiable {
     static let key = BrainPath(
         id: "api-key",
         title: "Paste a key you already have",
-        whatItIs: "A key is a long password a company gives you, and you pay by the word. Anthropic, OpenAI, OpenRouter, Google Gemini, DeepSeek, xAI and others — Gemini's is free to start.",
+        whatItIs: "A key is a company's long password; you pay by the word. Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek, xAI and more.",
         action: "Use a key",
         providers: [.anthropic, .openAI, .openRouter, .gemini, .deepSeek, .xai, .customKey])
 
@@ -219,8 +219,14 @@ struct BrainPath: Sendable, Identifiable {
         action: "Set this up",
         providers: [.lmStudio, .local])
 
+    /// Whose account a sign-in row borrows, as "Signed in with …" names
+    /// it — the row's own title, less the verb.
+    var accountName: String { title.replacingOccurrences(of: "Sign in with ", with: "") }
+
     /// In the order the screen offers them: the two recommendations first,
-    /// as a pair.
+    /// as a pair. Under them the screen adds a row of its own for someone
+    /// with no plan (`Onboarding.freeStartTitle`) — a way through the key
+    /// row, not a fifth kind of access.
     static let all: [BrainPath] = [claude, chatgpt, key, onThisMac]
 
     /// A plan the person already pays for — Claude or ChatGPT, recommended
@@ -252,7 +258,7 @@ enum CodexSignIn {
         if let b = Payload.bundlePayload {
             candidates.append(b.appendingPathComponent("scripts/\(script)").path)
         }
-        candidates.append(NSHomeDirectory() + "/moe/scripts/\(script)")
+        if let c = Payload.checkoutPath("scripts/\(script)") { candidates.append(c) }
         guard let target = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             return "Couldn't find \(script)."
         }

@@ -73,16 +73,34 @@ struct HermesEndpoint {
     /// wrapper as "the owner's words", so a number somebody else wrote in the
     /// brief could count as one the owner named. Hermes files an undeclared
     /// person turn as nobody's words.
+    ///
+    /// `spoken` says the person said this turn aloud and is waiting to hear
+    /// the answer: `X-Hermes-Voice-Turn: 1`, on a `.person` turn only. Hermes
+    /// then opens the turn at the lowest reasoning effort that brain has
+    /// (`Config.spokenTurnsOpenQuick`). A header rather than a body field or
+    /// a different system prompt on purpose: it is not part of what the
+    /// brain's process was started with (`LaunchSignature`), so a spoken turn
+    /// after a typed one costs no restart.
+    ///
+    /// `noMemory` says the chat is one the person asked not to be remembered
+    /// ("Don't remember this chat"): `X-Hermes-No-Memory: 1`, on every turn of
+    /// it whoever started it — a priming or a background note in that chat is
+    /// as private as the person's words. Hermes then refuses every memory
+    /// write in the turn, spawns no memory review after it, and the memory
+    /// plugins learn nothing from it.
 
     func chatRequest(sessionID: String, sessionKey: String,
                      system: String, user: String, stream: Bool,
                      brain: BrainSelection? = nil, images: [ImageAttachment] = [],
-                     origin: TurnStarter?, personWords: String? = nil) -> URLRequest {
+                     origin: TurnStarter?, personWords: String? = nil,
+                     spoken: Bool = false, noMemory: Bool = false) -> URLRequest {
         var req = request("v1/chat/completions")
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(stream ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
         if let origin { req.setValue(origin.rawValue, forHTTPHeaderField: "X-Hermes-Turn-Origin") }
+        if origin == .person, spoken { req.setValue("1", forHTTPHeaderField: "X-Hermes-Voice-Turn") }
+        if noMemory { req.setValue("1", forHTTPHeaderField: "X-Hermes-No-Memory") }
         if origin == .person, let words = personWords, let value = Self.personWordsHeader(words) {
             req.setValue(value, forHTTPHeaderField: "X-Hermes-Person-Words")
         }

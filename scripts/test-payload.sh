@@ -1,4 +1,6 @@
 #!/bin/bash
+# NEEDS: dist-app
+#
 # Proves the app can populate ~/.moe on its own, from inside its own bundle,
 # with no git checkout anywhere — which is the whole difference between what a
 # stranger downloads and what a developer runs.
@@ -17,6 +19,7 @@
 #   6. a second run changes nothing       → the stamp
 #   7. user edits survive an update       → the never-overwrite rule
 set -u
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD
 SCRATCH="${MOE_TEST_SCRATCH:-$(mktemp -d)}"

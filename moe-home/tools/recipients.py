@@ -1133,11 +1133,11 @@ def _found(names, text, hit, row, said, partial=None):
 
 #: Tools whose results are what a page or the screen showed — by name, from
 #: Hermes's own tools only (no MCP server's). Not a shell, a file, code, or a
-#: browser_cdp call: there the model writes what is printed.
+#: browser_cdp call: there the model writes what is printed. browser_exec is the
+#: one browser tool since the 0.3.26 pin (upstream retired browser_navigate,
+#: browser_snapshot, browser_vision and the rest of the legacy set).
 SHOWN_TOOLS = frozenset("""
-browser_exec browser_navigate browser_snapshot browser_vision browser_click browser_scroll
-browser_back browser_press browser_console browser_get_images
-web_extract web_search web_crawl computer_use
+browser_exec web_extract web_search web_crawl computer_use
 """.split())
 SCREEN_TOOLS = frozenset({"computer_use"})
 URL = re.compile(r"https?://([^/\s\"'<>]+)", re.I)

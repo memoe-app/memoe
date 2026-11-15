@@ -46,7 +46,7 @@ status)
        osascript -e 'tell application "Calendar" to return count of calendars' >/dev/null 2>&1; then
     echo "ok: reading Calendar.app"
   else
-    echo "needs-setup: allow Moe to control Calendar (System Settings › Privacy & Security › Automation)"
+    echo "needs-setup: allow Memoe to control Calendar (System Settings › Privacy & Security › Automation)"
     exit 1
   fi
   ;;

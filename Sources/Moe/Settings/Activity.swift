@@ -257,19 +257,19 @@ enum Activity {
 
     // MARK: - Running it
 
-    /// Asked with `/usr/bin/python3`, not the Hermes venv's interpreter.
+    /// Asked with `BrainSetup.python()` — Moe's own interpreter, never the
+    /// system `python3` (a stub that puts up an install dialog on a Mac
+    /// without developer tools).
     ///
-    /// `history.py` is stdlib-only on purpose — no PyYAML, nothing
-    /// imported out of Hermes — precisely so that a Mac whose Hermes
-    /// install is broken can still be told what happened before it broke.
-    /// `reminders.py` needs the venv because it imports Hermes's cron to
-    /// write to it; this reads databases and a log file.
+    /// `history.py` is still stdlib-only on purpose — no PyYAML, nothing
+    /// imported out of Hermes — so any real interpreter can run it, which is
+    /// what `BrainSetup.python()` falls back to when Moe's own is broken.
     static func ask(days: Int, logLines: Int) -> Answer? {
         guard let script = Chats.scriptPath() else { return nil }
         // Joined, for the same reason `Chats.askIndex` joins its own — one
         // spelling for every argument this repo hands argparse, so nobody
         // has to remember which of them can carry a leading hyphen.
-        let r = ScriptRunner.run("/usr/bin/python3",
+        let r = ScriptRunner.run(BrainSetup.python(),
                                  [script, "activity", "--days=\(days)",
                                   "--log-lines=\(logLines)"],
                                  timeout: 25)

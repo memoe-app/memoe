@@ -47,7 +47,7 @@ enum ContactsBridge {
         exit(0)
     }
 
-    static let needsSetup = "needs-setup: allow Moe to read your Contacts (System Settings › Privacy & Security › Contacts)"
+    static let needsSetup = "needs-setup: allow Memoe to read your Contacts (System Settings › Privacy & Security › Contacts)"
 
     /// Access, or a one-line reason and exit 3 — EventKitBridge's contract,
     /// which contacts.sh and the Connections row already read.

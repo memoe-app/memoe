@@ -46,6 +46,15 @@ import MoeLedger
 /// (its delegate queue is backed by `queue`). Events go out on the main queue.
 final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
 
+    /// The thinking in one streamed choice, when the provider sends it:
+    /// Hermes passes it on as `delta.reasoning_content` (the DeepSeek-style
+    /// field). Most providers and plans send none, and then nothing shows.
+    static func reasoning(in choice: [String: Any]) -> String? {
+        guard let delta = choice["delta"] as? [String: Any],
+              let t = delta["reasoning_content"] as? String, !t.isEmpty else { return nil }
+        return t
+    }
+
     private let queue = DispatchQueue(label: "moe.hermes")
 
     // MARK: State — queue-confined
@@ -68,6 +77,14 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         /// The ask's id on the edge (`moe.task_runs`), the same across
         /// re-issues. Empty for a silent turn, which is nobody's ask.
         var task = ""
+        /// The person said it aloud and is waiting to hear the answer
+        /// (`X-Hermes-Voice-Turn`). Never set on a re-issue: that goes out
+        /// after a wake, to nobody in particular.
+        var spoken = false
+        /// The chat this turn belongs to may not be remembered ("Don't
+        /// remember this chat"): `X-Hermes-No-Memory`. Taken when the turn is
+        /// queued, so a re-issue keeps it after the person has moved on.
+        var forget = false
         /// Run when Hermes has actually answered this turn, so a caller can
         /// tell "the model has this" from "we queued it". Priming needs the
         /// difference: abandonLocked(), stop() and a failed start all empty
@@ -94,6 +111,21 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
 
     private var urlSession: URLSession!
     private var running = false
+    /// The last start ended with the gateway refusing to come up, and nothing
+    /// has started this brain since. It is what tells "stopped because the
+    /// launch failed" — which a recovery or the next question should undo —
+    /// from "never started" and "stopped on purpose", which they must not.
+    private var launchFailed = false
+    /// The supervisor reported the gateway down *after* this brain was up,
+    /// and that was passed on as `.failedToLaunch`: the window shows
+    /// "Connecting…" over a brain that is still running. Cleared by the
+    /// `.ready` that follows the gateway's return.
+    private var toldGatewayIsDown = false
+    /// A turn or a probe got nothing from a gateway Moe runs itself, and the
+    /// supervisor has been asked to look (`noteUnreachable`). If it finds the
+    /// gateway hung and replaces it, the `onRecovered` that follows is for
+    /// this brain; a turn that works in the meantime settles the doubt.
+    private var gatewayInDoubt = false
     private var shuttingDown = false
     /// False from `start()` until the supervisor says the gateway answers:
     /// turns queue up behind it instead of hitting a port nobody is on yet.
@@ -104,6 +136,12 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
     private var startGeneration = 0
     private var sessionID = UUID().uuidString.lowercased()
     private var systemPrompt = ""
+    /// What the last request into `sessionID` told Hermes its child should
+    /// have been started with (`LaunchSignature`). A request that differs
+    /// makes Hermes replace the child under that turn; it is logged here,
+    /// with what moved, because from Hermes's side the cause is only "the
+    /// prompt changed" and from the person's it is six seconds of nothing.
+    private var lastSignature: (session: String, signature: LaunchSignature)?
     /// `context/_connections.md` — what the prompt above was told is
     /// connected — and whether it still says that. See
     /// `refreshPromptIfConnectionsChangedLocked()`.
@@ -141,6 +179,9 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
     var taskArbiter: ((String, @escaping (Bool) -> Void) -> Void)?
     /// The thread the session was resumed on; the task row names it.
     private var threadID = ""
+    /// The open chat is one the person asked not to be remembered: every turn
+    /// queued from now on carries `X-Hermes-No-Memory` (`remember(_:)`).
+    private var forgetting = false
     /// Debug-only (`Moe --ask`, scripts/test-turn-keeper.sh): a thread for
     /// a brain that was started rather than resumed, so the ask is reported.
     var threadForTests: String {
@@ -212,10 +253,18 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         // A gateway that keeps dying after it was once up: the supervisor has
         // given up, so say so the same way a failed launch is said.
         supervisor?.onError = { [weak self] message in
+            self?.queue.async { self?.toldGatewayIsDown = true }
             self?.emit(.failedToLaunch(message))
         }
         supervisor?.onStatus = { [weak self] line in
             self?.emit(.status(line))
+        }
+        // The supervisor keeps trying after it gives up, and says so in the
+        // failure it reports ("Moe will keep trying quietly"). This is the
+        // other half of that promise: when it works, the brain comes back
+        // with it instead of staying stopped until a relaunch.
+        supervisor?.onRecovered = { [weak self] in
+            self?.queue.async { self?.gatewayRecoveredLocked() }
         }
 
         // Loopback only, no proxy (see HermesEndpoint). A turn that runs
@@ -223,7 +272,9 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         // every 30s of silence, so the idle timeout only has to outlast
         // that. The resource timeout bounds a whole turn.
         let cfg = HermesEndpoint.sessionConfiguration()
-        cfg.timeoutIntervalForRequest = 120
+        // Debug-only test hook (scripts/test-hermes-supervisor.sh §18): a
+        // turn that goes quiet is given up on sooner than two minutes.
+        cfg.timeoutIntervalForRequest = TestHooks.env("MOE_HERMES_TURN_IDLE_TIMEOUT").flatMap(Double.init) ?? 120
         cfg.timeoutIntervalForResource = 3600
         let delegateQueue = OperationQueue()
         delegateQueue.maxConcurrentOperationCount = 1
@@ -237,9 +288,36 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         queue.async { self.startLocked() }
     }
 
+    /// The gateway answers again after the supervisor had reported a failure.
+    ///
+    /// Two brains can be listening. One whose launch failed is stopped
+    /// (`running == false`) and is started again. One that was already up
+    /// when the gateway later died is still running, but the Conductor was
+    /// told `.failedToLaunch` and shows "Connecting…" — a probe emits the
+    /// `.ready` that puts the window right.
+    private func gatewayRecoveredLocked() {
+        guard !shuttingDown else { return }
+        if running {
+            // Only when the window was told otherwise. A start this brain
+            // made itself probes on its own, and a second `.ready` in the
+            // middle of the turn that caused it would be noise.
+            guard toldGatewayIsDown || gatewayInDoubt else { return }
+            toldGatewayIsDown = false
+            gatewayInDoubt = false
+            Log.write("hermes: the gateway is back; checking in with it")
+            probeLocked()
+        } else if launchFailed {
+            Log.write("hermes: the gateway came back on its own; starting again")
+            startLocked()
+        }
+    }
+
     private func startLocked() {
         guard !running, !shuttingDown else { return }
         running = true
+        launchFailed = false
+        toldGatewayIsDown = false
+        gatewayInDoubt = false
         rebuildPromptLocked()
         startConnectionsWatchLocked()
         if apiKey.isEmpty {
@@ -276,6 +354,7 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
                     // Nothing to talk to. Drop what was queued; the user gets
                     // one clear message rather than one per turn.
                     self.running = false
+                    self.launchFailed = true
                     self.pending.removeAll()
                     self.emit(.failedToLaunch(f.message))
                 }
@@ -585,18 +664,40 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         queue.async { self.brain = brain }
     }
 
+    func remember(_ remembers: Bool) {
+        queue.async { self.forgetting = !remembers }
+    }
+
     private func warmUpLocked() {
         sendLocked("Respond with only the word: ready", silent: true, starter: .background)
     }
 
     func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
               starter: TurnStarter) {
-        queue.async { self.sendLocked(text, images: images, silent: silent, logAs: logAs, starter: starter) }
+        send(text, images: images, silent: silent, logAs: logAs, starter: starter, spoken: false)
+    }
+
+    func send(_ text: String, images: [ImageAttachment], silent: Bool, logAs: String?,
+              starter: TurnStarter, spoken: Bool) {
+        queue.async {
+            self.sendLocked(text, images: images, silent: silent, logAs: logAs, starter: starter,
+                            spoken: spoken)
+        }
     }
 
     private func sendLocked(_ text: String, images: [ImageAttachment] = [], silent: Bool,
-                            logAs: String? = nil, starter: TurnStarter,
+                            logAs: String? = nil, starter: TurnStarter, spoken: Bool = false,
                             onDelivered: (() -> Void)? = nil) {
+        // A launch that failed is not the end of this brain. The person
+        // asking again is the best reason there is to try again, and it is
+        // what the failure told them to expect; the turn queues behind the
+        // start and is answered, or the start says plainly why not. Only for
+        // a turn somebody is waiting on: a silent one must not make Moe
+        // announce a failure nobody asked about.
+        if !running, launchFailed, !shuttingDown, !silent {
+            Log.write("hermes: asked while stopped after a failed launch; starting again")
+            startLocked()
+        }
         guard running, !shuttingDown else {
             emit(.error("Moe isn't connected."))
             return
@@ -604,11 +705,42 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         // One turn at a time on a session. The CLI brains get this for free
         // from a stdin pipe; here two concurrent requests with the same
         // session id would race each other in Hermes's transcript.
-        pending.append(Turn(text: text, silent: silent, images: images, logAs: logAs,
-                            starter: starter, task: silent ? "" : UUID().uuidString.lowercased(),
-                            onDelivered: onDelivered))
+        // A person's turn that has to wait for one of Moe's own — a warm-up,
+        // a thread's priming — is waiting for the brain's process to start:
+        // the same six seconds as a respawn, by another road, and until now
+        // just as invisible in the log.
+        if !silent, starter == .person, let ahead = current?.turn ?? pending.first, ahead.silent {
+            Log.write("hermes: this turn is waiting behind a silent one (the brain is still starting)")
+        }
+        pending.append(turnLocked(text, images: images, silent: silent, logAs: logAs,
+                                  starter: starter, spoken: spoken, onDelivered: onDelivered))
         if !silent { Log.write("→ \(logAs ?? text)") }
         pumpLocked()
+    }
+
+    /// A turn as `sendLocked` queues it: this chat's "don't remember" is
+    /// taken now, so a re-issue keeps it.
+    private func turnLocked(_ text: String, images: [ImageAttachment] = [], silent: Bool,
+                            logAs: String? = nil, starter: TurnStarter, spoken: Bool = false,
+                            onDelivered: (() -> Void)? = nil) -> Turn {
+        Turn(text: text, silent: silent, images: images, logAs: logAs,
+             starter: starter, task: silent ? "" : UUID().uuidString.lowercased(),
+             spoken: spoken && !silent && starter == .person,
+             forget: forgetting, onDelivered: onDelivered)
+    }
+
+    /// A turn as the request Hermes would receive for it now.
+    private func requestLocked(for turn: Turn) -> URLRequest {
+        Self.request(endpoint: endpoint, sessionID: sessionID, system: systemPrompt,
+                     brain: brain, text: turn.text, images: turn.images,
+                     starter: turn.starter, logAs: turn.logAs, spoken: turn.spoken,
+                     forget: turn.forget)
+    }
+
+    /// The request the next turn sent would be, through `remember` and the
+    /// queue the way a real one goes. For tests.
+    func nextRequestForTesting(_ text: String, starter: TurnStarter) -> URLRequest {
+        queue.sync { requestLocked(for: turnLocked(text, silent: false, starter: starter)) }
     }
 
     private func pumpLocked() {
@@ -632,21 +764,8 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         // the ten-minute sync's identical rewrite costs nothing.
         refreshPromptIfConnectionsChangedLocked()
 
-        // Session key "moe" is stable across conversations on purpose: the
-        // session id is the transcript, the key is the person.
-        // The Now line (ticket #9), here and nowhere else: this is the one
-        // place every turn — spoken, typed, a background note, a resume's
-        // priming, a re-issue after sleep — becomes a request, so none can
-        // go without it, and a re-issue's pre-sleep line is replaced by the
-        // time it is actually sent. `TurnClock` says why not at the callers.
-        let req = endpoint.chatRequest(sessionID: sessionID, sessionKey: "moe",
-                                       system: systemPrompt, user: TurnClock.stamped(turn.text), stream: true,
-                                       brain: brain, images: turn.images,
-                                       origin: turn.starter,
-                                       // The person's own words, apart from the wrapper
-                                       // (`HermesEndpoint.chatRequest`): what the log calls
-                                       // the turn is exactly that, for every person-started send.
-                                       personWords: turn.starter == .person ? (turn.logAs ?? turn.text) : nil)
+        let req = requestLocked(for: turn)
+        noteSignatureLocked(of: req)
         let task = urlSession.dataTask(with: req)
         current = InFlight(task: task, turn: turn)
         // Debug-only, for scripts/test-turn-keeper.sh: pretend the Mac slept
@@ -663,6 +782,46 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
             reportTaskLocked(.open, current!, status: "ok")
         }
         task.resume()
+    }
+
+    /// One turn as the request Hermes receives. Static and pure so the test
+    /// that holds the launch signature still (`LaunchSignatureTests`) builds
+    /// its turns through the very code a real one goes through.
+    ///
+    /// Session key "moe" is stable across conversations on purpose: the
+    /// session id is the transcript, the key is the person. The Now line
+    /// (ticket #9) is stamped here and nowhere else: this is the one place
+    /// every turn — spoken, typed, a background note, a resume's priming, a
+    /// re-issue after sleep — becomes a request, so none can go without it,
+    /// and a re-issue's pre-sleep line is replaced by the time it is actually
+    /// sent. `TurnClock` says why not at the callers.
+    static func request(endpoint: HermesEndpoint, sessionID: String, system: String,
+                        brain: BrainSelection, text: String, images: [ImageAttachment] = [],
+                        starter: TurnStarter, logAs: String? = nil, spoken: Bool = false,
+                        forget: Bool = false) -> URLRequest {
+        endpoint.chatRequest(sessionID: sessionID, sessionKey: "moe",
+                             system: system, user: TurnClock.stamped(text), stream: true,
+                             brain: brain, images: images,
+                             origin: starter,
+                             // The person's own words, apart from the wrapper
+                             // (`HermesEndpoint.chatRequest`): what the log calls
+                             // the turn is exactly that, for every person-started send.
+                             personWords: starter == .person ? (logAs ?? text) : nil,
+                             spoken: spoken, noMemory: forget)
+    }
+
+    /// Say so when this request names a different launch than the last one
+    /// into the same session did. Nothing is refused: a connection really did
+    /// change, or somebody changed the language — but it is never silent.
+    private func noteSignatureLocked(of request: URLRequest) {
+        guard let signature = LaunchSignature(requestBody: request.httpBody) else { return }
+        defer { lastSignature = (sessionID, signature) }
+        guard let last = lastSignature, last.session == sessionID else { return }
+        let moved = signature.changes(since: last.signature)
+        guard !moved.isEmpty else { return }
+        Log.write("hermes: this turn asks for a different brain process than the last one did — "
+                  + moved.joined(separator: ", ")
+                  + ". Hermes starts a new one under this turn (about six seconds).")
     }
 
     /// One line for the edge about the ask in flight. Portability is what
@@ -705,7 +864,8 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
             // `.background` whoever asked first: a re-issue goes out after a
             // wake, and nobody may be at the Mac.
             let again = Turn(text: text, silent: false, images: c.turn.images, logAs: c.turn.logAs,
-                             starter: .background, resumed: c.turn.resumed + 1, task: c.turn.task, onDelivered: c.turn.onDelivered)
+                             starter: .background, resumed: c.turn.resumed + 1, task: c.turn.task,
+                             forget: c.turn.forget, onDelivered: c.turn.onDelivered)
             let session = sessionID
             pendingResume = (c, session)
             // Before it goes again: does this Mac still hold the ask? A sleep
@@ -788,9 +948,31 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
             // stream either way; both are the same break.
             if !c.finished, sleptDuringTurn,
                resumeAfterSleepLocked(c, error: URLError(.networkConnectionLost)) { return }
-            if !c.finished { finishTurn(c, error: nil, end: .streamEnded) }
+            guard !c.finished else { return }
+            // Nothing at all came back. This used to be a finished turn with
+            // an empty answer and `error: nil` — no words, no sound, the
+            // island simply going quiet as though Moe had answered. Whatever
+            // the cause, the person asked and got nothing, and that is a
+            // failure they are told about. A stream that ended early with
+            // some of the answer still stands as what it is.
+            if c.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Log.write("hermes: the stream ended with no finish and no answer"
+                          + (c.consequential ? " (after a step that sent, paid or deleted)" : ""))
+                finishTurn(c, error: c.consequential ? Self.noAnswerAfterActingNote : Self.noAnswerNote,
+                           end: .failed)
+            } else {
+                finishTurn(c, error: nil, end: .streamEnded)
+            }
         }
     }
+
+    /// Said and shown when a turn ends with nothing in it. Spoken after
+    /// "I couldn't answer that." (`SpokenError`), so it does not repeat it.
+    static let noAnswerNote = "No answer came back. Ask me again."
+    /// The same, when the turn had already sent, paid or deleted something:
+    /// asking again unprompted could do it twice.
+    static let noAnswerAfterActingNote =
+        "No answer came back, but Moe had already started acting on it. Check what it did before asking again."
 
     // MARK: - SSE
 
@@ -800,13 +982,19 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
     /// exactly as a live stream's do, and what comes out is `onEvent`'s.
     /// Nothing else about a turn (endpoint, auth, the edge) is involved.
     #if DEBUG
-    func replayStreamForTesting(_ bytes: Data) {
+    /// `thenEnd`: the stream then closes cleanly, with no error, through the
+    /// real `urlSession(_:task:didCompleteWithError:)` — how a stream that
+    /// never sent a finish chunk ends.
+    func replayStreamForTesting(_ bytes: Data, thenEnd: Bool = false) {
         queue.sync {
             let task = urlSession.dataTask(with: URL(string: "http://127.0.0.1:9/replay")!)
             let c = InFlight(task: task, turn: Turn(text: "replay", silent: false))
             c.status = 200
             current = c
             urlSession(urlSession, dataTask: task, didReceive: bytes)
+            if thenEnd, current === c {
+                urlSession(urlSession, task: task, didCompleteWithError: nil)
+            }
             if current === c { current = nil }
         }
     }
@@ -941,6 +1129,9 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
             c.text += t
             if !c.turn.silent { emit(.textDelta(t)) }
         }
+        if let thinking = Self.reasoning(in: choice), !c.turn.silent {
+            emit(.reasoningDelta(thinking))
+        }
         if let reason = choice["finish_reason"] as? String {
             switch reason {
             case "stop":
@@ -1019,12 +1210,20 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
             // lie as no row at all. A silent turn counts: it spent the same
             // credential on the same provider.
             BrainTrouble.clear()
+            gatewayInDoubt = false
         }
         if c.turn.silent {
             Log.write("← (silent turn complete)")
             return
         }
         if let error { emit(.error(error)) }
+        // The allowance of requests to the connected apps ran out during
+        // this turn (or a background one since the last): said once, here,
+        // rather than left to whatever the model made of the refusal.
+        if let capped = ComposioCapNotice.take() {
+            Log.write("notice: \(capped)")
+            emit(.notice(capped))
+        }
         Log.write("← \(c.text)")
         emit(.turnFinished(c.text, error == nil ? end : .failed))
     }
@@ -1046,6 +1245,7 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
             // Tell the supervisor: an adopted gateway that has gone away is
             // replaced sooner if it doesn't wait for its own next check.
             supervisor.noteUnreachable()
+            gatewayInDoubt = true
             switch supervisor.standing {
             case .owned:
                 return "Moe is starting the part of itself that thinks. Ask me again in a moment."
@@ -1055,6 +1255,17 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
                 return "Moe stopped thinking and couldn't start again. \(why) Try New Conversation."
             }
         case .timedOut:
+            // Two minutes without a byte from a gateway that sends a
+            // keepalive every thirty seconds. Usually a provider that stopped
+            // mid-answer; sometimes the gateway itself, alive and answering
+            // nothing — and until 2026-11-12 nothing looked, so every turn
+            // after it ended here too. The supervisor asks the gateway
+            // directly and replaces it only if it does not answer; a slow
+            // turn on a healthy gateway is left exactly as it is.
+            if let supervisor {
+                supervisor.noteUnreachable()
+                gatewayInDoubt = true
+            }
             return "Moe is taking too long to answer. Try again."
         case .cancelled:
             return "Stopped."
@@ -1111,7 +1322,8 @@ final class HermesBrain: NSObject, BrainProvider, URLSessionDataDelegate {
         case "read_file":                return "reading a file"
         case "write_file", "patch":      return "writing a file"
         case "web_search":               return "searching the web"
-        case "web_extract", "browser_navigate": return "reading a page"
+        case "web_extract":              return "reading a page"
+        case "browser_exec":             return "working in the browser"
         case "search_files":             return "searching your files"
         default:                         return tool.replacingOccurrences(of: "_", with: " ")
         }

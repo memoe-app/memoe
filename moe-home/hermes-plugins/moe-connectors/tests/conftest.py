@@ -12,6 +12,27 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _hermes_home_is_not_this_macs(monkeypatch, tmp_path_factory):
+    """HERMES_HOME is a scratch directory, unless a test sets its own.
+
+    `tools/recipients.py` decides whether Hermes keeps recipient ledgers
+    partly from the installed Hermes itself —
+    `$HERMES_HOME/hermes-agent/agent/recipient_grounding.py` — and
+    `hermes_home()` falls back to `~/.hermes`. Every `Home` here points
+    MOE_HOME at a temp directory and left HERMES_HOME alone, so a send in a
+    test was judged by whichever Hermes the developer happened to have
+    installed: with none, or an old one, grounding read "off" and the send
+    ran; with the pinned one it read "on", found no conversation key, and
+    eight tests about argv, stdin and the origin label failed on "Moe could
+    not check who asked for this recipient" (measured 2026-11-12).
+
+    The tests that are about grounding set HERMES_HOME themselves and pin
+    grounding on in the owner record; they are untouched by this.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path_factory.mktemp("hermes-home")))
+
+
+@pytest.fixture(autouse=True)
 def _a_person_is_present(monkeypatch):
     try:
         import tools.browser_chrome_extension as presence

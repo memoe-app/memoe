@@ -16,6 +16,14 @@ import Foundation
 /// onboarding and Settings › Brain give the same answer.
 enum Bootstrap {
 
+    /// What a failed set-up says: a plain sentence and what to do. Script
+    /// names, paths and exit codes go to the log.
+    enum Failure {
+        static let damaged = "✗ This copy of Memoe is missing a piece it needs. Download Memoe again from memoe.app and replace this one."
+        static let tookTooLong = "✗ That took too long, so I stopped it. Check your internet connection and try again — it picks up where it left off."
+        static let didNotFinish = "✗ That didn't finish. Check your internet connection and try again — it picks up where it left off."
+    }
+
     struct State {
         var hermes: Bool
         var claudeCLI: Bool
@@ -70,7 +78,8 @@ enum Bootstrap {
     @discardableResult
     static func installClaudeCLI(progress: @escaping @Sendable (String) -> Void) -> Bool {
         guard let script = ScriptRunner.scriptPath("install-claude.sh") else {
-            progress("✗ Moe cannot find its own copy of the Claude Code installer.")
+            Log.write("bootstrap: install-claude.sh is not in the payload")
+            progress(Failure.damaged)
             return false
         }
         progress("Getting Claude Code. It is about 200 MB.")
@@ -79,9 +88,11 @@ enum Bootstrap {
             if t.hasPrefix("✓") || t.hasPrefix("✗") || t.hasPrefix("›") { progress(t) }
         })
         if r.timedOut {
-            progress("✗ That took too long and was stopped. Running it again is safe.")
+            Log.write("bootstrap: install-claude.sh timed out")
+            progress(Failure.tookTooLong)
             return false
         }
+        if r.status != 0 { Log.write("bootstrap: install-claude.sh exited \(r.status)") }
         return r.status == 0
     }
 
@@ -128,7 +139,8 @@ enum Bootstrap {
         }
 
         guard let script = installerPath() else {
-            progress("✗ Moe cannot find its own installer (install-hermes.sh).")
+            Log.write("bootstrap: install-hermes.sh is not in the payload")
+            progress(Failure.damaged)
             return false
         }
         progress("Setting up the part of Moe that thinks. This takes a minute or two.")
@@ -143,13 +155,17 @@ enum Bootstrap {
         })
         let result = r.status == 0 && !r.timedOut
         if r.timedOut {
-            progress("✗ That took too long and was stopped. Running it again is safe.")
+            Log.write("bootstrap: install-hermes.sh timed out")
+            progress(Failure.tookTooLong)
             return false
         }
         if result {
             progress("✓ Ready. Now choose how Moe should think.")
         } else {
-            progress("✗ That did not finish. ~/.moe/logs/install-hermes.log says why, and running this again is safe.")
+            // Why is in the installer's own log (logs/install-hermes.log in
+            // Moe's home) — for whoever reads logs, not for this screen.
+            Log.write("bootstrap: install-hermes.sh exited \(r.status); see logs/install-hermes.log")
+            progress(Failure.didNotFinish)
         }
         return result
     }

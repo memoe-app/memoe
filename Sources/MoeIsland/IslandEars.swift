@@ -40,6 +40,10 @@ public enum IslandEars {
         /// one colour left on the island. `paused` greys the dot and says so;
         /// `whisper` adds a waveform while you are asking Moe something.
         case recording(paused: Bool, whisper: Bool)
+        /// Moe is working, on a Mac with a floating capsule: a small white
+        /// ring with a light running round it. On a notch the light runs
+        /// round the notch itself; a capsule's outline is the camera's.
+        case working
     }
 
     /// The right ear: Moe's own presence, and anything it has to tell you.
@@ -47,7 +51,8 @@ public enum IslandEars {
         /// At rest: one dim dot. "It's there, but it shouldn't be glowing."
         case presence
         /// Something is waiting for you (a held reminder, an update, a call
-        /// offer): the dot at full white. Still — nothing breathes.
+        /// offer): the dot at full white. Still — nothing breathes. Not on a
+        /// floating capsule at rest, which shows nothing (`of`).
         case waiting
         /// Something just arrived: the ear widens to hold its line for a few
         /// seconds (`Conductor.noticePeek`), then shrinks back to a dot.
@@ -57,6 +62,9 @@ public enum IslandEars {
         case driving(String)
         /// A meeting's news: "2 action items", "Writing notes…", "Notes ready".
         case meeting(String)
+        /// Moe is working, on a floating capsule: the word ("Thinking",
+        /// "Working"), with the ring beside it when the left side is taken.
+        case working(String, ring: Bool)
     }
 
     public struct Inputs: Equatable, Sendable {
@@ -87,6 +95,16 @@ public enum IslandEars {
         public var waiting = false
         /// "Using Safari" / "Browsing", while Moe drives.
         public var driving: String?
+        /// The Mac's camera floats in a capsule (`NotchGeometry.Cutout`).
+        /// The island is that capsule and nothing else at rest, and working
+        /// is shown inside it rather than as a light round the notch.
+        public var capsule = false
+        /// "Thinking" or "Working", for the capsule's right side.
+        public var workingWord: String?
+        /// A conversation is open between turns — Moe has finished and is
+        /// waiting to hear whether you go on — and nobody is speaking.
+        /// `listening` is still true then; on a capsule that is rest.
+        public var betweenTurns = false
 
         public init() {}
     }
@@ -94,7 +112,31 @@ public enum IslandEars {
     /// Both ears for a state. Nil is an ear tucked away behind the notch.
     public static func of(_ i: Inputs) -> (left: Left?, right: Right?) {
         guard !i.open else { return (nil, nil) }
-        return (left(i), right(i))
+        guard i.capsule else { return (left(i), right(i)) }
+        var l = left(i), r = right(i)
+        // Between turns nobody is being heard: no bars until somebody is.
+        if i.betweenTurns, l == .levels { l = nil }
+        // Working: the ring on the left when that side is free, and the word
+        // on the right when nothing else has it. A meeting keeps its right
+        // side quiet, as it does on a notch.
+        if i.working {
+            let ringOnLeft = l == nil
+            if ringOnLeft { l = .working }
+            if r == nil, !i.recording, let word = i.workingWord {
+                r = .working(word, ring: !ringOnLeft)
+            }
+        }
+        // At rest the island is the hardware's capsule exactly: no dot — not
+        // even the white one that says something is waiting. That dot sat
+        // in 22 pt of black right of the camera, 77 pt with a microphone
+        // open (it steps past macOS's pill), for as long as a notice went
+        // unread, and the owner photographed it as idle on 2026-11-12: "you
+        // see the black always stick out … you shouldn't see anything
+        // different than the default notch." What is waiting is in the card
+        // on hover; a notice arriving still grows the capsule (`notice`).
+        // Both dots come back as soon as the left side has anything to say.
+        if l == nil, r == .presence || r == .waiting { r = nil }
+        return (l, r)
     }
 
     static func left(_ i: Inputs) -> Left? {
@@ -166,6 +208,7 @@ public enum IslandEars {
     public static func contentWidth(_ left: Left, measure: (String) -> CGFloat) -> CGFloat {
         switch left {
         case .levels, .speaking: return barsWidth
+        case .working: return glyph
         case .dictating: return glyph + gap + barsWidth
         case .muted: return glyph + gap + measure(mutedWord)
         case .paused: return glyph + gap + measure(pausedWord)
@@ -183,6 +226,7 @@ public enum IslandEars {
         case .notice(let s): return waitingDotSize + gap + measure(s)
         case .driving(let s): return measure(s) + gap + measure(stopWord) + stopPad * 2
         case .meeting(let s): return measure(s)
+        case .working(let s, let ring): return (ring ? glyph + gap : 0) + measure(s)
         }
     }
 
@@ -196,9 +240,10 @@ public enum IslandEars {
     /// driving ear's Stop. Generous by a few points on the inside, because
     /// the chip is small and sits at the top edge of the screen.
     public static func hitsStop(xFromCentre x: CGFloat, notchWidth: CGFloat, right: Right?,
+                                maximumReach: CGFloat = .infinity,
                                 measure: (String) -> CGFloat) -> Bool {
         guard case .driving? = right else { return false }
-        let outer = notchWidth / 2 + reach(right, measure: measure)
+        let outer = notchWidth / 2 + min(reach(right, measure: measure), maximumReach)
         let chip = measure(stopWord) + stopPad * 2
         return x <= outer && x >= outer - outerPad - chip - 4
     }
@@ -222,6 +267,9 @@ public enum IslandEars {
 public enum IslandTrail {
     /// Seconds per lap of the notch.
     public static let lap: Double = 2.4
+    /// Seconds per turn of the small ring a floating capsule shows instead
+    /// (`IslandEars.Left.working`): a circle is a much shorter track.
+    public static let ringLap: Double = 0.9
     /// Where a snapshot (`Moe --panel-snapshot`) poses the head.
     public static let snapshotPoint: CGFloat = 0.3
     /// The bright head, as a fraction of the outline.

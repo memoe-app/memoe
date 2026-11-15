@@ -57,6 +57,7 @@ struct PaneButton: View {
             HStack(spacing: Theme.Space.snug) {
                 if let symbol {
                     Image(systemName: symbol).font(.system(size: large ? 11 : 10, weight: .medium))
+                        .accessibilityHidden(true)
                 }
                 // One line, always. A button label is a short phrase and
                 // wrapping it turns "Check now" into two stacked words in a
@@ -315,6 +316,7 @@ struct PaneSearch: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Theme.ink3)
+                .accessibilityHidden(true)
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
                 .font(Theme.Typo.ui(12))
@@ -324,6 +326,7 @@ struct PaneSearch: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(Theme.ink3)
+                        .accessibilityLabel("Clear search")
                 }
                 .buttonStyle(.plain)
             }
@@ -392,6 +395,7 @@ struct SettingRow<Control: View>: View {
     var note: String? = nil
     var last = false
     @ViewBuilder var control: Control
+    @Environment(\.settingSpotlight) var spotlight
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Space.base) {
@@ -421,6 +425,7 @@ struct SettingRow<Control: View>: View {
         // No divider between rows: the calmer look of Settings › Voice.
         // `last` is kept so no caller has to change.
         .padding(.vertical, 9)
+        .settingSpotlight(title, lit: spotlight == title)
     }
 }
 
@@ -446,6 +451,7 @@ struct SettingMenu<Content: View>: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.ink3)
+                    .accessibilityHidden(true)
             }
             .contentShape(Rectangle())
         }
@@ -470,6 +476,7 @@ struct PaneLink: View {
                     .font(Theme.Typo.ui(12, weight: .semibold))
                 Image(systemName: "arrow.right")
                     .font(.system(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
             }
             .foregroundStyle(Theme.accentDeep)
             .contentShape(Rectangle())
@@ -495,6 +502,72 @@ struct PaneEmpty: View {
         }
         .padding(Theme.Space.section)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// A detail pane: what it says scrolls, what it does stays where it is.
+///
+/// The Connections detail, the brain's and Chrome's were each one `VStack`
+/// with a `Spacer` above the buttons and nothing that scrolled. A stack of
+/// fixed-size text has a minimum height — everything in it — and a
+/// `maxHeight: .infinity` frame reports that minimum when it is offered less.
+/// So a Gmail row with three accounts made the whole window's content taller
+/// than the window, and AppKit centres a hosted view that does not fit: the
+/// title went off the top, the buttons off the bottom, the list beside it
+/// lost its last rows, and nothing scrolled because nothing was a scroll view
+/// (the owner's report, 2026-11-12). Here the page scrolls inside the pane
+/// and the bar is pinned under it, the same shape as the list's own footer —
+/// so the pane's minimum height is the bar's, whatever the page holds.
+struct PaneDetail<Page: View, Bar: View>: View {
+    /// False for a row with nothing to press: no rule and no empty strip.
+    var showsBar = true
+    @ViewBuilder var page: Page
+    @ViewBuilder var bar: Bar
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                page
+                    .padding(Theme.Space.wide)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            if showsBar {
+                Rectangle().fill(Theme.rule).frame(height: 1)
+                bar
+                    .padding(.horizontal, Theme.Space.wide)
+                    .padding(.vertical, Theme.Space.base)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// A bar of buttons that folds instead of running off the side: one row when
+/// it fits, the trailing (usually destructive) button on a row of its own
+/// when it does not, and one button per row when even that is too wide. At
+/// the window's minimum the Connections detail is about 320pt across, and
+/// "Add another", "Check now" and "Disconnect…" in one row need more.
+struct PaneActionBar<Leading: View, Trailing: View>: View {
+    @ViewBuilder var leading: Leading
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.Space.small) {
+                leading
+                Spacer(minLength: Theme.Space.small)
+                trailing
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.small) {
+                HStack(spacing: Theme.Space.small) { leading }
+                trailing
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.small) {
+                leading
+                trailing
+            }
+        }
     }
 }
 

@@ -127,6 +127,8 @@ struct InboxPane: View {
                                 .overlay(Capsule().stroke(filter == f ? Color.clear : Theme.rule, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Show \(f.rawValue.lowercased())")
+                        .accessibilityAddTraits(filter == f ? .isSelected : [])
                     }
                 }
             }
@@ -162,6 +164,47 @@ struct InboxPane: View {
                 .padding(.bottom, 12)
             }
         }
+        // ↑ and ↓ walk the list once it has the keyboard (Tab reaches it),
+        // and the card on the right follows.
+        .focusable()
+        .focusEffectDisabled()
+        .onMoveCommand { direction in
+            switch direction {
+            case .up: step(-1)
+            case .down: step(1)
+            default: break
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Inbox")
+    }
+
+    /// Every row in the order it is drawn: waiting, snoozed, done.
+    private var rowsInOrder: [InboxItem] { waiting + snoozed + done }
+
+    /// The next row up or down from the one that is open; the first when
+    /// none is. Stops at the ends rather than wrapping.
+    private func step(_ by: Int) {
+        selected = Self.neighbour(of: selected, in: rowsInOrder.map(\.id), by: by)
+    }
+
+    static func neighbour(of current: String?, in ids: [String], by: Int) -> String? {
+        guard !ids.isEmpty else { return nil }
+        guard let current, let i = ids.firstIndex(of: current) else { return ids.first }
+        return ids[min(max(i + by, 0), ids.count - 1)]
+    }
+
+    /// One row as one sentence: "Unread. Reminder. Call the dentist. Before
+    /// five. 3:00 PM". A finished row says how it finished instead of when.
+    static func spoken(_ n: InboxItem, picking: Bool, picked: Bool) -> String {
+        var parts: [String] = []
+        if picking { parts.append(picked ? "Selected" : "Not selected") }
+        if n.status == .open, !n.seen { parts.append("Unread") }
+        parts.append(n.kind.label)
+        parts.append(NoticeWords.bare(n.title))
+        if !n.summary.isEmpty { parts.append(NoticeWords.bare(n.summary)) }
+        parts.append(n.status == .done ? (n.outcome ?? "Done") : NoticeStyle.time(n.at))
+        return parts.joined(separator: ". ")
     }
 
     // MARK: Many at once
@@ -289,6 +332,19 @@ struct InboxPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.spoken(n, picking: picking, picked: isPicked))
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { click(n) }
+        .accessibilityActions {
+            if !finished {
+                Button("Archive") { conductor.archiveNotices([n.id]) }
+                Button(isPicked ? "Take out of the selection" : "Add to the selection") {
+                    if picked.contains(n.id) { picked.remove(n.id) } else { picked.insert(n.id) }
+                    anchor = n.id
+                }
+            }
+        }
     }
 
     // MARK: The detail
@@ -301,6 +357,7 @@ struct InboxPane: View {
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "tray").font(.system(size: 26, weight: .light)).foregroundStyle(Theme.ink3)
+                    .accessibilityHidden(true)
                 Text("Pick something on the left to read it.")
                     .font(Theme.Typo.ui(13)).foregroundStyle(Theme.ink3)
             }

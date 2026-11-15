@@ -386,6 +386,35 @@ def slack_install_pairings():
     return out
 
 
+def cloud_channel_knocks():
+    """Somebody who messaged a channel the cloud holds and is waiting to be
+    let in, in the `pending_pairings` shape (`Pairing.parse`): platform
+    `cloud_<channel>`, the chat id zero-padded to the 16 digits the button
+    carries, and the sender's name. `pairing.sh approve cloud_<channel> <id>`
+    runs `channels.py approve`. Without this the Telegram sheet span on
+    "Finish in Telegram…" with the owner's own hello waiting behind it and no
+    button anywhere to let it in (2026-11-13). A group (negative id) or an id
+    longer than 16 digits is left to `channels.py knocks`."""
+    try:
+        with open(os.path.join(moe_home(), "cloud", "channel-holder.json"),
+                  encoding="utf-8") as fh:
+            held = json.load(fh) or {}
+    except (OSError, ValueError):
+        return []
+    out = []
+    for w in held.get("waiting") or []:
+        if not isinstance(w, dict):
+            continue
+        channel, chat = str(w.get("channel") or ""), str(w.get("chat_id") or "")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,24}", channel) \
+                or not chat.isdigit() or len(chat) > 16:
+            continue
+        who = " ".join(str(w.get("sender") or "").split())[:60]
+        out.append({"platform": "cloud_" + channel, "request_id": chat.zfill(16),
+                    "user_name": who, "user_id": ""})
+    return out
+
+
 def _slack_app_receiving():
     """Whether Moe's own Slack app's marker says the cloud's socket is open.
 
@@ -878,8 +907,7 @@ def cloud_holder_row(channel, label=None):
                   "Moe does not answer anybody who has not been let in, so "
                   "nothing has been sent to them." % len(waiting))
         return {"state": "needs-setup",
-                "detail": detail + " Let them in: connectors/channels.py approve "
-                                   "%s <chat>" % channel}
+                "detail": detail + " Approve them above to let them in."}
     if said:
         # channel-holder.py wrote this for a person and it names the channel
         # and what has gone wrong. It never carries a token or a webhook path.
@@ -1862,7 +1890,8 @@ def main(argv):
         note_watch_skips(conns)
         if "--json" in argv:
             json.dump({"connections": conns,
-                       "pending_pairings": H.pending_pairings() + slack_install_pairings()},
+                       "pending_pairings": H.pending_pairings() + slack_install_pairings()
+                                           + cloud_channel_knocks()},
                       sys.stdout, indent=1)
             print()
         else:

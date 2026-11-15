@@ -48,6 +48,15 @@ class JobsBriefTest(unittest.TestCase):
              "last_run_at": "2026-09-30T09:00:00-04:00"}
         self.assertEqual(jb.lines([a], cloud=True), jb.lines([dict(a, failure_streak=4)], cloud=True))
 
+    def test_a_browser_job_runs_in_the_cloud_too_unless_it_needs_the_macs_own(self):
+        # Away has its own browser since 2026-11-13 (docs/AWAY-BROWSER.md).
+        job = {"name": "Prices", "prompt": "Use browser_exec to read the pricing page.",
+               "id": "ab12cd34ef56", "schedule": {"display": "daily"}}
+        self.assertEqual(jb.lines([job], cloud=True),
+                         ["- Prices — daily, on your Mac, and in the cloud while it is off — not run yet"])
+        own = dict(job, prompt="browser_exec local=true: read my inbox.")
+        self.assertEqual(jb.lines([own], cloud=True), ["- Prices — daily, on your Mac — not run yet"])
+
     def test_no_cloud_computer_no_cloud_promise(self):
         job = {"name": "Brief", "prompt": "x", "id": "ab12cd34ef56", "schedule": {"display": "daily"}}
         self.assertEqual(jb.lines([job], cloud=False), ["- Brief — daily, on your Mac — not run yet"])

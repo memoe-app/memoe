@@ -1,4 +1,6 @@
 #!/bin/bash
+# NEEDS: debug-confirm
+#
 # The secret window (Sources/MoeConfirm/SecretMain.swift, contract in
 # Sources/MoeDesign/SecretPrompt.swift): a person types a password or a
 # sign-in code, and Hermes gets it as JSON on stdout — never argv, env or a
@@ -21,6 +23,7 @@
 # binary FAILS rather than skipping.
 set -u
 
+unset CDPATH   # an exported CDPATH makes `cd` print, and $(cd … && pwd) then reads two lines
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$HERE/.."
 S="$(mktemp -d /private/tmp/moe-secret-prompt.XXXXXX)"
